@@ -1,0 +1,7 @@
+{
+  "name": "sports-hall",
+  "private": true,
+  "type": "module",
+  "description": "Table tennis for Meta Quest (WebXR + three.js)",
+  "scripts": { "test": "node --test tests" }
+}

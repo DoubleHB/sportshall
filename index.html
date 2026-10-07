@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sports Hall</title>
+<meta name="description" content="Table tennis for Meta Quest, in VR or mixed reality, against a robot or a ball machine.">
+<meta name="theme-color" content="#0e1320">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='26' cy='26' r='20' fill='%23d8262f'/%3E%3Crect x='34' y='38' width='10' height='24' rx='4' transform='rotate(-45 39 50)' fill='%23c89a62'/%3E%3Ccircle cx='50' cy='14' r='7' fill='%23ff9a2e'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0e1320; --card: rgba(20, 27, 45, 0.86); --line: #2c3954; --text: #eef3ff; --dim: #93a3c4;
+    --accent: #ff7a1a; --accent2: #2fb8ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { display: block; }
+  #overlay {
+    position: fixed; inset: 0; display: grid; place-items: center; padding: 16px;
+    background: radial-gradient(ellipse at 50% 30%, rgba(14, 19, 32, 0.55), rgba(14, 19, 32, 0.92));
+    transition: opacity 0.3s;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  .card {
+    width: min(560px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 24px;
+    padding: 32px 28px 24px; backdrop-filter: blur(8px); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  }
+  .brand { color: var(--accent); font-weight: 800; letter-spacing: 0.12em; font-size: 14px; }
+  h1 { margin: 6px 0 4px; font-size: clamp(34px, 7vw, 46px); line-height: 1.05; }
+  .sub { color: var(--dim); margin: 0 0 22px; font-size: 16px; line-height: 1.45; }
+  button {
+    width: 100%; display: flex; align-items: center; gap: 14px; text-align: left;
+    padding: 16px 18px; margin: 0 0 12px; border-radius: 16px; border: 1px solid var(--line);
+    background: #1b2438; color: var(--text); font: inherit; cursor: pointer; transition: transform 0.08s, background 0.15s;
+  }
+  button:hover:not(:disabled) { background: #24304b; transform: translateY(-1px); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+  button.primary:hover:not(:disabled) { background: #ff9445; }
+  button .ico { font-size: 26px; width: 34px; text-align: center; flex: none; }
+  button b { display: block; font-size: 18px; }
+  button span.d { display: block; font-size: 14px; color: inherit; opacity: 0.8; margin-top: 2px; }
+  #xr-note { color: var(--dim); font-size: 14px; min-height: 20px; margin: 6px 2px 0; line-height: 1.4; }
+  .foot { margin-top: 16px; color: #66749a; font-size: 12px; display: flex; justify-content: space-between; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="overlay">
+  <div class="card">
+    <div class="brand">SPORTS HALL</div>
+    <h1>Table Tennis</h1>
+    <p class="sub">Play a robot at four levels, or practise against the ball machine. You swing a real paddle in your hand, with spin, aim assist and room-scale play.</p>
+    <button id="btn-vr" class="primary" disabled><span class="ico">🥽</span><span><b>Play in VR</b><span class="d">In a sports hall with a crowd</span></span></button>
+    <button id="btn-ar" disabled><span class="ico">🏠</span><span><b>Play in your room</b><span class="d">Mixed reality: the table appears in your real room</span></span></button>
+    <button id="btn-screen"><span class="ico">🖥️</span><span><b>Preview on this screen</b><span class="d">Mouse moves the paddle, it swings by itself</span></span></button>
+    <div id="xr-note">Checking for VR…</div>
+    <div class="foot"><span>Clear a space about 2 × 2.5 m</span><span>v0.1</span></div>
+  </div>
+</div>
+<script type="module">
+  const q = new URLSearchParams(location.search);
+  // ?pump=1 (testing): animation frames only run when __pump(n) is called, so a
+  // hidden preview tab can still be stepped through frame by frame.
+  if (q.has('pump')) {
+    let queue = [], id = 0, t = 0;
+    window.requestAnimationFrame = cb => { queue.push({ id: ++id, cb }); return id; };
+    window.cancelAnimationFrame = h => { queue = queue.filter(e => e.id !== h); };
+    window.__pump = (n = 1, ms = 1000 / 72) => {
+      for (let i = 0; i < n; i++) { t += ms; const run = queue; queue = []; run.forEach(e => e.cb(t)); }
+    };
+  }
+  // ?emulate=1 fakes a Quest 3 (Meta's IWER) so the VR code can be tested on a PC.
+  if (q.has('emulate')) {
+    const { XRDevice, metaQuest3 } = await import('https://cdn.jsdelivr.net/npm/iwer@2.5.0/build/iwer.module.min.js');
+    const dev = new XRDevice(metaQuest3);
+    dev.installRuntime({ forceInstall: true });
+    // IWER 2.5 stores the offset as a raw matrix; hand it the transform's matrix.
+    const RS = globalThis.XRReferenceSpace;
+    const orig = RS.prototype.getOffsetReferenceSpace;
+    RS.prototype.getOffsetReferenceSpace = function (t) { return orig.call(this, t && t.matrix ? t.matrix : t); };
+    window.__xrDevice = dev;
+  }
+  await import('./src/main.js');
+</script>
+</body>
+</html>
