@@ -34,15 +34,24 @@ best of 3 or 5, against any of the six robots (each throws with its own spread:
 Rookie averages about 26 a visit, Omega about 79) or two people taking turns. The
 robot steps up beside you to throw, the caller calls each visit ("One hundred
 and eighty!"), the scoreboard shows checkouts, and the bed for your first dart
-glows. Practice: Around the Clock (fewest darts), Count-up (8 visits) and Free
-throw. In VR the dart sticks out of your throwing hand's controller: hold the
+glows. **Cricket**: close 20 down to 15 and the bull (three marks each; a double
+is two, a treble three), then score on your closed numbers until the other side
+closes them; marks per round on the scoreboard, numbers everyone has closed greyed
+out on the board, the caller calls marks and white horses. **Killer**: 2-4 players
+(you and robots picked round the one you choose, or people taking turns), 3 or 5
+lives, each player's number tinted in their colour on the board: hit yours three
+times to become a killer, then a single takes one life, a double two, a treble
+three, and your own number costs you one. Up to three robots wait their turn on
+your left. In cricket and Killer every robot dart gets the concentration of a
+finishing double (Rookie would take 60+ visits a cricket leg otherwise). Practice:
+Around the Clock (fewest darts), Count-up (8 visits) and Free throw. In VR the dart sticks out of your throwing hand's controller: hold the
 trigger (or grip), throw, let go. The throw speed is the peak of the last 120 ms
 (so letting go a moment late doesn't kill it); Settings has aim help (pulls a
 near miss towards where the dart was pointing as you aimed; Full also shows an
 aim dot) and throw power (for darts landing low). On a screen, point at the
 board, press, and let go when the wobble settles. `src/darts/board.js` (sizes,
-scoring, aim points), `rules.js` (x01 legs and busts, checkout routes, Around the
-Clock, Count-up), `flight.js` (projectile, where a throw ends up, bounce-outs off
+scoring, aim points), `rules.js` (x01 legs and busts, checkout routes, Cricket,
+Killer and where to aim at each, Around the Clock, Count-up), `flight.js` (projectile, where a throw ends up, bounce-outs off
 the wire, release speed), `robots.js` (spreads, lines, the caller) and `game.js`
 (stage, turns, robot, cameras); tested in `tests/darts.test.mjs`.
 

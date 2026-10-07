@@ -27,14 +27,14 @@ import { COURSES as GOLF_COURSES, coursePar } from './golf/course.js';
 import { createDarts, DARTS_VIEW } from './darts/game.js';
 import { DART_AVG } from './darts/robots.js';
 
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
 // ------------------------------------------------------------- settings --
 const FEEL = { size: PH.PADDLE.radius, bounce: PH.PADDLE.e, grip: PH.PADDLE.mu, power: 1, smooth: 0 };
 const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1, golfCourse: 'classic',
-  dartsOpp: 'rookie', dartsStart: 301, dartsFinish: 'any', dartsLegs: 3, dartsAssist: 'light', dartsPower: 1, dartsCaller: true };
+  dartsOpp: 'rookie', dartsGame: 'x01', dartsStart: 301, dartsFinish: 'any', dartsLegs: 3, dartsKPlayers: 4, dartsLives: 3, dartsAssist: 'light', dartsPower: 1, dartsCaller: true };
 const settings = load('sh_settings', DEFAULTS);
 settings.feel = { ...FEEL, ...(settings.feel || {}) };
 // Paddle feel (Settings > Paddle feel): each step, its limits, and how to show it.
@@ -56,7 +56,7 @@ stats.cups ??= 0;
 stats.lessons ??= {};     // best stars per lesson
 stats.golfBests ??= {};   // best solo round per golf course
 if (stats.golfBest && !stats.golfBests.classic) stats.golfBests.classic = stats.golfBest;   // from v0.6
-stats.darts = { beaten: [], wins: 0, losses: 0, high: 0, n180: 0, bestOut: 0, atcBest: null, countBest: 0, ...(stats.darts || {}) };
+stats.darts = { beaten: [], wins: 0, losses: 0, high: 0, n180: 0, bestOut: 0, atcBest: null, countBest: 0, cWins: 0, cLosses: 0, bestMarks: 0, kWins: 0, kGames: 0, ...(stats.darts || {}) };
 // The cup in progress (kept between visits).
 let cupSaved = null;
 try { cupSaved = JSON.parse(localStorage.getItem('sh_cup') || 'null'); } catch { /* none */ }
@@ -257,14 +257,16 @@ golf = createGolf({
   },
 });
 // Darts, the third sport: the robot comes down to the oche to throw with you.
+const MATCH_GAMES = ['x01', 'cricket', 'killer'];      // the Match tab's games (the rest are practice)
 darts = createDarts({
   scene, camera, raycaster, settings, stats, save,
   sfx: { play: (k, p, s) => sfx.play(k, p, s) },
   showBanner: (...a) => showBanner(...a),
   isXR: () => G.inXR,
-  robot: W.robot,
+  // Up to three robots at the oche (Killer): the usual one, the exhibition one and a spare.
+  get robots() { return [W.robot, robot2, robot3]; },
   get banner() { return banner.mesh; },     // darts move the message banner about
-  say: (rival, line) => robotSpeak(rival, line, O),
+  say: (rival, line, model) => { G.speaker = model; robotSpeak(rival, line, O); },
   call: text => { if (settings.dartsCaller) sfx.speak(text, { pitch: 0.9, rate: 1.05 }); },
   haptic: (i, ms) => haptic(paddleCtrl(), i, ms),
   cheer: a => W.crowd.cheer(a),
@@ -299,6 +301,9 @@ setRival(rivalById(QUICK[settings.level]));
 const robot2 = W.makeRobot();
 robot2.root.visible = false;
 const bubble2 = createBubble(scene);
+// A third robot, only for darts.
+const robot3 = W.makeRobot();
+robot3.root.visible = false;
 G.botP = new Bot('medium', { side: 1 });
 G.rivalP = null;
 
@@ -315,11 +320,13 @@ function robotSay(moment, force = false, who = O) {
   lastTalk = G.now;
   robotSpeak(rival, line, who);
 }
+// The robot the main speech bubble follows (darts can have three at the oche).
+const speaker = () => (darts?.active && G.speaker ? G.speaker : W.robot);
 // Show a robot's line in its bubble and say it (beeps or a voice).
 function robotSpeak(rival, line, who = O) {
   if (settings.talk === 'off') return;
   (who === O ? bubble : bubble2).say(line, hex(rival.look.accent));
-  const head = (who === O ? W.robot : robot2).headPos(new V3());
+  const head = (who === O ? speaker() : robot2).headPos(new V3());
   const voice = VOICE[rival.voice] ?? { pitch: 1, rate: 1 };
   if (settings.talk === 'voice' && sfx.speak(line, voice)) return;
   if (settings.talk === 'beeps' || settings.talk === 'voice') sfx.babble(line, head, voice.pitch * 0.6 + 0.5);
@@ -523,17 +530,37 @@ function renderMenu(ui) {
     label('Opponent', 298);
     ui.options('dartsOpp', L, 316, width, 112, [...RIVALS.map(r => [r.id, r.name, D.beaten.includes(r.id) ? '✓ beaten' : `averages ${DART_AVG[r.id]}`]), ['local', '2 players', 'take turns']], settings.dartsOpp, 10);
     label('Game', 482);
-    ui.options('dartsStart', L, 498, width / 2 - 20, 96, [[301, '301', 'quicker'], [501, '501', 'the classic']], settings.dartsStart);
-    ui.text('Finish', L + width / 2 + 20, 482, { size: 32, weight: 650, color: C.dim });
-    ui.options('dartsFinish', L + width / 2 + 20, 498, width / 2 - 20, 96, [['any', 'Any finish', 'hit the exact score'], ['double', 'Double out', 'end on a double']], settings.dartsFinish);
-    label('Match length', 640);
-    ui.options('dartsLegs', L, 656, width, 84, [[1, '1 leg'], [3, 'Best of 3 legs'], [5, 'Best of 5 legs']], settings.dartsLegs);
-    dim(`Won ${D.wins}, lost ${D.losses}  ·  highest visit ${D.high || '–'}  ·  best checkout ${D.bestOut || '–'}  ·  180s ${D.n180}`, 790);
+    const game = settings.dartsGame, local = settings.dartsOpp === 'local', half = width / 2 - 20, right = L + width / 2 + 20;
+    ui.options('dartsGame', L, 498, width, 96, [[301, '301', 'quicker'], [501, '501', 'the classic'], ['cricket', 'Cricket', 'close 15–20 and the bull'], ['killer', 'Killer', 'last one standing']], game === 'x01' ? settings.dartsStart : game);
+    const legs = (x, y, w) => ui.options('dartsLegs', x, y, w, 84, [[1, '1 leg'], [3, 'Best of 3'], [5, 'Best of 5']], settings.dartsLegs);
+    const killers = !local && game === 'killer' ? killerField(settings.dartsOpp, settings.dartsKPlayers - 1) : [];
+    if (game === 'x01') {
+      label('Finish', 640);
+      ui.options('dartsFinish', L, 656, half, 84, [['any', 'Any finish', 'hit the exact score'], ['double', 'Double out', 'end on a double']], settings.dartsFinish);
+      ui.text('Match length', right, 640, { size: 32, weight: 650, color: C.dim });
+      legs(right, 656, half);
+      dim(`Won ${D.wins}, lost ${D.losses}  ·  highest visit ${D.high || '–'}  ·  best checkout ${D.bestOut || '–'}  ·  180s ${D.n180}`, 790);
+    } else if (game === 'cricket') {
+      label('Match length', 640);
+      legs(L, 656, half);
+      ui.text('Three marks close a number (a double is two, a treble', right, 684, { size: 25, weight: 500, color: C.dim });
+      ui.text('three), then it scores for you till they close it too.', right, 718, { size: 25, weight: 500, color: C.dim });
+      dim(`Cricket: won ${D.cWins}, lost ${D.cLosses}  ·  best visit ${D.bestMarks ? `${D.bestMarks} marks` : '–'}`, 790);
+    } else {
+      label(local ? 'Players (take turns)' : 'Players (you and robots)', 640);
+      ui.options('dartsKPlayers', L, 656, half, 84, [[2, '2'], [3, '3'], [4, '4']], settings.dartsKPlayers);
+      ui.text('Lives', right, 640, { size: 32, weight: 650, color: C.dim });
+      ui.options('dartsLives', right, 656, half, 84, [[3, '3 lives'], [5, '5 lives']], settings.dartsLives);
+      dim(local ? 'Hit your number 3 times to be a killer, then hit the others\' numbers. Your own costs a life.'
+        : `You v ${killers.map(r => r.name).join(', ')}  ·  Killer wins ${D.kWins} of ${D.kGames}`, 790);
+    }
     if (G.lastResult && G.sport === 'darts') ui.text(G.lastResult, L, 836, { size: 32, weight: 700, color: G.lastResult.startsWith('You beat') ? C.good : C.text });
-    if (G.mode === 'darts' && darts.inProgress() && darts.state.mode === 'x01') {
+    const play = game === 'killer' ? (local ? `Play Killer (${settings.dartsKPlayers} players)` : 'Play Killer')
+      : local ? 'Play (take turns)' : `Play ${rivalById(settings.dartsOpp).name}${game === 'cricket' ? ' at cricket' : ''}`;
+    if (G.mode === 'darts' && darts.inProgress() && MATCH_GAMES.includes(darts.state.mode)) {
       ui.button('resume', L, 866, width / 2 - 10, 116, 'Resume', { primary: true, size: 48 });
       ui.button('darts:play', L + width / 2 + 10, 866, width / 2 - 10, 116, 'New match', { size: 42 });
-    } else ui.button('darts:play', L, 866, width, 116, settings.dartsOpp === 'local' ? 'Play (take turns)' : `Play ${rivalById(settings.dartsOpp).name}`, { primary: true, size: 50 });
+    } else ui.button('darts:play', L, 866, width, 116, play, { primary: true, size: 50 });
   } else if (G.tab === 'dpractice') {
     const rows = [
       ['atc', 'Around the Clock', 'Hit 1, then 2, then 3, all the way to 20, then the bull. Fewest darts wins.', D.atcBest ? `Best: ${D.atcBest} darts` : ''],
@@ -549,7 +576,7 @@ function renderMenu(ui) {
       if (best) ui.text(best, R - 290, y + 58, { size: 32, weight: 800, color: '#d4af37', align: 'right' });
       ui.button(`darts:${id}`, R - 250, y + 36, 220, 78, 'Start', { primary: true, size: 36 });
     });
-    if (G.mode === 'darts' && darts.inProgress() && darts.state.mode !== 'x01') ui.button('resume', L, 830, width, 100, 'Resume', { primary: true, size: 46 });
+    if (G.mode === 'darts' && darts.inProgress() && !MATCH_GAMES.includes(darts.state.mode)) ui.button('resume', L, 830, width, 100, 'Resume', { primary: true, size: 46 });
   } else if (G.tab === 'dsettings') {
     label('Throwing hand', 298);
     ui.options('hand', L, 314, width / 2 - 20, 84, [['right', 'Right'], ['left', 'Left']], settings.hand);
@@ -842,9 +869,10 @@ function onMenuClick(id) {
       G.tab = v === 'golf' ? 'golf' : v === 'darts' ? 'darts' : 'match';
     }
   }
-  else if (k === 'darts') startDarts(v === 'play' ? 'x01' : v);
+  else if (k === 'darts') startDarts(v);
   else if (k === 'dartsOpp' || k === 'dartsFinish' || k === 'dartsAssist') settings[k] = v;
-  else if (k === 'dartsStart' || k === 'dartsLegs') settings[k] = +v;
+  else if (k === 'dartsGame') { if (+v) { settings.dartsGame = 'x01'; settings.dartsStart = +v; } else settings.dartsGame = v; }
+  else if (k === 'dartsStart' || k === 'dartsLegs' || k === 'dartsKPlayers' || k === 'dartsLives') settings[k] = +v;
   else if (k === 'dartsCaller') settings.dartsCaller = v === 'true';
   else if (k === 'dpower') settings.dartsPower = +Math.max(0.7, Math.min(1.5, settings.dartsPower + (v === '+' ? 0.05 : -0.05))).toFixed(2);
   else if (id === 'golf:start') startGolf();
@@ -926,7 +954,9 @@ function clearPlay() {
   // Back from darts: the robot picks its paddle up again.
   if (darts?.active) {
     darts.stop(); attachHands();
-    W.robot.showPaddle(true); W.robot.root.position.set(0, 0, 0); setRival(G.rival);
+    for (const r of [W.robot, robot2, robot3]) { r.showPaddle(true); r.root.position.set(0, 0, 0); }
+    robot3.root.visible = false; G.speaker = null;
+    setRival(G.rival);
     fitCamera(); placeBoards(); banner.mesh.scale.setScalar(1);
   }
   W.table.visible = true; scoreboard.mesh.visible = true;
@@ -936,16 +966,26 @@ function clearPlay() {
 // The touch screen's Serve button is only for table tennis.
 function serveButton(on) { document.getElementById('touch-serve').hidden = !on; }
 
-// Darts: mode x01 (a match), atc, count or free.
+// The robots for a game of Killer: the one you picked, then its neighbours on the ladder.
+function killerField(id, n) {
+  const i = Math.max(0, RIVALS.findIndex(r => r.id === id));
+  return [...RIVALS].sort((a, b) => Math.abs(RIVALS.indexOf(a) - i) - Math.abs(RIVALS.indexOf(b) - i) || RIVALS.indexOf(a) - RIVALS.indexOf(b)).slice(0, n);
+}
+
+// Darts: mode 'play' (the match picked on the Match tab: x01, cricket or
+// killer), atc, count or free.
 function startDarts(mode) {
   clearPlay();
   G.mode = 'darts';
   W.table.visible = false; scoreboard.mesh.visible = false;
   desk.outer.visible = false;
   const local = settings.dartsOpp === 'local';
+  if (mode === 'play') mode = settings.dartsGame;
   setView(DARTS_VIEW);
   closeMenu();
-  darts.start({ mode, start: settings.dartsStart, doubleOut: settings.dartsFinish === 'double', legs: settings.dartsLegs, rival: mode === 'x01' && !local ? rivalById(settings.dartsOpp) : null });
+  const rival = ['x01', 'cricket'].includes(mode) && !local ? rivalById(settings.dartsOpp) : null;
+  const rivals = mode === 'killer' && !local ? killerField(settings.dartsOpp, settings.dartsKPlayers - 1) : null;
+  darts.start({ mode, start: settings.dartsStart, doubleOut: settings.dartsFinish === 'double', legs: settings.dartsLegs, rival, rivals, players: settings.dartsKPlayers, lives: settings.dartsLives });
   attachHands();
   serveButton(false);
   if (!G.inXR) darts.snapCamera();
@@ -2069,7 +2109,7 @@ function onFrame(t, frame, render = true) {
     W.setBall(G.ball ? G.ball.p : null, G.ball ? PH.len(G.ball.v) : 0);
     if (!G.paused) { G.bot.update(dt, G.now); G.botP.update(dt, G.now); }
     if (W.robot.root.visible && !darts.active) W.robot.update(G.bot, G.ball?.p ?? null, dt);
-    if (robot2.root.visible) robot2.update(G.botP, G.ball?.p ?? null, dt);
+    if (robot2.root.visible && !darts.active) robot2.update(G.botP, G.ball?.p ?? null, dt);
     if (friendAvatar.root.visible) {
       friendPaddle.group.getWorldPosition(_hp);
       const hx = friendDesk.target.x * 0.55;
@@ -2100,8 +2140,9 @@ function onFrame(t, frame, render = true) {
   cam.getWorldQuaternion(_cq);
   // Push the bubble sideways relative to the viewer, so it clears the head.
   const side = new V3(0.62, 0.22, 0).applyQuaternion(_cq).setY(0.22);
-  if (W.robot.root.visible) bubble.update(dt, W.robot.headPos(_hp).add(side), _cq);
-  if (robot2.root.visible) bubble2.update(dt, robot2.headPos(_hp).add(side), _cq);
+  const sp = speaker();
+  if (sp.root.visible) bubble.update(dt, sp.headPos(_hp).add(side), _cq);
+  if (robot2.root.visible && !darts.active) bubble2.update(dt, robot2.headPos(_hp).add(side), _cq);
 
   if (!render) return;
   renderer.render(scene, camera);

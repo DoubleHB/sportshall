@@ -3,9 +3,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { R, NUMBERS, BOARD, FACE_Z, OCHE_Z, scoreAt, aimPoint, parseLabel, wireDist, segmentAt } from '../src/darts/board.js';
-import { X01, AroundClock, CountUp, checkoutRoute, robotTarget, THROWS } from '../src/darts/rules.js';
+import { X01, AroundClock, CountUp, checkoutRoute, robotTarget, THROWS, Cricket, CRICKET_NUMS, cricketTarget, Killer, killerTarget } from '../src/darts/rules.js';
 import { flightOutcome, solveLaunch, posAt, releaseVelocity } from '../src/darts/flight.js';
-import { robotDart, DART_SKILL, DART_AVG, callFor, words } from '../src/darts/robots.js';
+import { robotDart, DART_SKILL, DART_AVG, callFor, words, goesForTrebles as trebles } from '../src/darts/robots.js';
 import { rng32 } from './sim.mjs';
 
 const h = label => { const { n, mult } = parseLabel(label); return { n, mult, score: n * mult, label }; };
@@ -165,6 +165,145 @@ test('around the clock and count-up', () => {
   for (let i = 0; i < 6; i++) c.throwDart(h('T20'));
   assert.ok(c.done);
   assert.equal(c.total, 360);
+});
+
+test('cricket: marks, points only while someone is open, and the leg', () => {
+  const g = new Cricket({ legs: 3, players: 2 });
+  let r = g.throwDart(h('T20'));
+  assert.ok(r.closedNow && r.marks === 3 && r.points === 0);
+  r = g.throwDart(h('D20'));                           // closed, they're open: 40 points
+  assert.equal(r.points, 40);
+  assert.equal(g.points[0], 40);
+  r = g.throwDart(h('14'));                            // not a cricket number
+  assert.ok(r.done && r.marks === 0);
+  assert.equal(g.visit.marks, 5);
+  g.next();
+  assert.equal(cricketTarget(g, 1), 'T20');            // close the number they're scoring on
+  g.throwDart(h('20')); g.throwDart(h('D20'));         // player 2 closes 20: now it's dead
+  assert.ok(g.dead(20));
+  r = g.throwDart(h('T19'));
+  assert.ok(r.closedNow);
+  g.next();
+  r = g.throwDart(h('T20'));                           // dead number: nothing
+  assert.equal(r.marks, 0);
+  assert.equal(r.points, 0);
+  assert.equal(g.points[0], 40);
+  // Player 1 closes everything with more points: the leg.
+  for (const n of [19, 18, 17, 16, 15]) g.marks[0][n] = 3;
+  g.throwDart(h('25'));
+  r = g.throwDart(h('Bull'));
+  assert.ok(r.legWon && r.done && !r.matchOver);
+  assert.equal(g.legsWon[0], 1);
+  assert.equal(g.next(), 'leg');
+  assert.equal(g.turn, 1);
+  assert.equal(g.points[0], 0);
+  // Closing everything while behind isn't enough: you have to catch up.
+  const b = new Cricket({ legs: 1, players: 2 });
+  for (const n of CRICKET_NUMS) b.marks[0][n] = 3;
+  b.marks[0][15] = 2;
+  b.marks[0][16] = 2;
+  b.points[1] = 30;
+  b.marks[1][16] = 3;
+  r = b.throwDart(h('15'));
+  assert.ok(!r.legWon);
+  assert.equal(cricketTarget(b, 0), 'T16');            // their scoring number comes first
+  b.marks[0][16] = 3;
+  assert.equal(cricketTarget(b, 0), 'T20');            // then score where they're open
+  r = b.throwDart(h('D20'));
+  assert.ok(r.legWon && r.matchOver);
+  assert.equal(b.winner, 0);
+  // A white horse: three trebles on three different numbers.
+  const w = new Cricket();
+  ['T20', 'T19', 'T18'].forEach(l => w.throwDart(h(l)));
+  assert.ok(w.whiteHorse);
+  assert.equal(w.mpr(0), 9);
+});
+
+test('killer: becoming a killer, lives, own goals and the last one standing', () => {
+  const g = new Killer({ players: 3, lives: 3, numbers: [20, 1, 5] });
+  let r = g.throwDart(h('20'));
+  assert.equal(r.events[0].kind, 'charge');
+  r = g.throwDart(h('T1'));                            // not a killer yet: nothing happens
+  assert.equal(r.events.length, 0);
+  assert.equal(g.lives[1], 3);
+  r = g.throwDart(h('D20'));                           // 1 + 2 = 3: a killer
+  assert.equal(r.events[0].kind, 'killer');
+  assert.ok(g.killer[0] && r.done);
+  g.next();
+  assert.equal(g.turn, 1);
+  g.next(); g.next();
+  r = g.throwDart(h('T1'));                            // a treble takes three lives: out
+  assert.deepEqual(r.events.map(e => e.kind), ['hit', 'out']);
+  assert.equal(g.lives[1], 0);
+  r = g.throwDart(h('20'));                            // own number as a killer costs a life
+  assert.equal(r.events[0].kind, 'self');
+  assert.equal(g.lives[0], 2);
+  g.throwDart(h('5'));
+  g.next();
+  assert.equal(g.turn, 2);                             // player 2 is out, so it skips them
+  g.next();
+  g.lives[2] = 1;
+  r = g.throwDart(h('D5'));
+  assert.ok(r.matchOver);
+  assert.equal(g.winner, 0);
+  assert.deepEqual(g.outOrder, [1, 2]);
+  // Aiming: your own number first, then the biggest threat, not next door.
+  const k = new Killer({ players: 3, numbers: [20, 1, 3] });
+  assert.equal(killerTarget(k, 0, true), 'T20');
+  assert.equal(killerTarget(k, 0, false), '20');
+  k.killer[0] = true;
+  assert.equal(killerTarget(k, 0, true, () => 0), 'T3');   // 1 is next to 20
+  k.killer[1] = true;
+  k.lives[1] = 1;
+  assert.equal(killerTarget(k, 0, true, () => 0), 'T1');   // ...unless it's a killer about to go
+});
+
+// Robots playing cricket and Killer: games end, and better robots win more.
+test('robots finish cricket legs and Killer games', () => {
+  const rng = rng32(5);
+  // Every dart at cricket and Killer is aimed at one bed, so robots concentrate (as on a finishing double).
+  const throwAt = (id, label) => { const p = robotDart(id, label, rng, true); return scoreAt(p.x, p.y); };
+  for (const id of ['rookie', 'chopper', 'omega']) {
+    let total = 0;
+    for (let leg = 0; leg < 40; leg++) {
+      const g = new Cricket({ legs: 1, players: 2 });
+      let darts = 0;
+      while (!g.over && darts < 2000) { g.throwDart(throwAt(id, cricketTarget(g, g.turn))); darts++; if (g.visit.done) g.next(); }
+      assert.ok(g.over, `${id} finished cricket`);
+      total += darts;
+    }
+    console.log(`${id} v ${id}: ${Math.round(total / 40 / 6)} visits each a cricket leg`);
+    assert.ok(total / 40 / 6 < { rookie: 35, chopper: 13, omega: 6 }[id], id);
+  }
+  // Rookie v Omega at cricket: Omega nearly always wins.
+  let omega = 0;
+  for (let leg = 0; leg < 40; leg++) {
+    const g = new Cricket({ legs: 1, players: 2, firstThrower: leg % 2 });
+    const ids = ['rookie', 'omega'];
+    while (!g.over) { g.throwDart(throwAt(ids[g.turn], cricketTarget(g, g.turn))); if (g.visit.done) g.next(); }
+    if (g.winner === 1) omega++;
+  }
+  assert.ok(omega >= 36, `omega won ${omega}/40`);
+  // Killer, four players a side.
+  const field = { rookie: ['rookie', 'bolt', 'spinny', 'rookie'], mid: ['chopper', 'spinny', 'vortex', 'bolt'], top: ['omega', 'vortex', 'zippy', 'chopper'] };
+  for (const [name, ids] of Object.entries(field)) {
+    let visits = 0;
+    const wins = {};
+    for (let n = 0; n < 60; n++) {
+      const g = new Killer({ players: 4, lives: 3, firstThrower: n % 4, rng });
+      let darts = 0;
+      while (!g.over && darts < 3000) {
+        const id = ids[g.turn];
+        g.throwDart(throwAt(id, killerTarget(g, g.turn, trebles(id), rng)));
+        darts++;
+        if (g.visit.done) { visits++; g.next(); }
+      }
+      assert.ok(g.over, `${name} Killer finished`);
+      wins[ids[g.winner]] = (wins[ids[g.winner]] ?? 0) + 1;
+    }
+    console.log(`Killer (${name}): ${Math.round(visits / 60)} visits a game, wins`, wins);
+    assert.ok(visits / 60 < 25, name);
+  }
 });
 
 test('the caller', () => {

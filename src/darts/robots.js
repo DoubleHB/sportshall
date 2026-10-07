@@ -28,6 +28,8 @@ export function robotDart(id, label, rng = Math.random, finishing = false) {
   const s = skillOf(id), a = aimPoint(label), k = finishing ? 0.5 : 1;
   return { x: a.x + gauss(rng) * s.sx * k, y: a.y + gauss(rng) * s.sy * k };
 }
+// At Killer, only the straighter throwers go for trebles; the rest aim at the big single.
+export const goesForTrebles = id => skillOf(id).sx < 0.05;
 // Rough three-dart average aiming at T20, for the menu.
 export const DART_AVG = { rookie: 26, bolt: 31, spinny: 35, chopper: 39, vortex: 51, omega: 79, zippy: 47 };
 
@@ -127,7 +129,87 @@ const LINES = {
   },
 };
 
-export const DART_TALK_CHANCE = { start: 1, big: 0.7, max: 1, low: 0.4, bust: 0.9, pBig: 0.6, pMax: 1, pLow: 0.35, pBust: 0.8, legWin: 1, pLegWin: 1, win: 1, pWin: 1 };
+// Cricket: cBig (5+ marks), pcBig (yours), cLegWin, pcLegWin. Killer: kKiller
+// (it's a killer now), kHit (it took a life off you), kHurt (you took one off
+// it), kOut (it's out), kSelf (it hit its own number), kYouOut (you're out).
+const MORE = {
+  nice: {
+    cBig: ['I closed one! Do I get a sticker?', 'Lots of marks! Hooray!'],
+    pcBig: ['You\'re closing everything!', 'Wow, so many marks!'],
+    cLegWin: ['I closed them all! Yay!'],
+    pcLegWin: ['You shut the whole board! Well done!'],
+    kKiller: ['I\'m a killer now? That sounds scary!', 'Oh! I\'m a killer! Sorry in advance!'],
+    kHit: ['Sorry! Sorry! I had to!', 'Oops, that was your number!'],
+    kHurt: ['Ow! Fair enough!', 'Eek! You got me!'],
+    kOut: ['I\'m out! That was fun though!'],
+    kSelf: ['I hit my own number! Silly me!'],
+    kYouOut: ['Oh no, you\'re out! You can cheer for me!'],
+  },
+  hyper: {
+    cBig: ['MARKS! MARKS! MARKS!', 'Closing at TOP SPEED!'],
+    pcBig: ['Whoa, slow down with the marks!', 'Hey! Leave some for me!'],
+    cLegWin: ['ALL CLOSED! Victory lap!'],
+    pcLegWin: ['You closed it all? I wasn\'t ready!'],
+    kKiller: ['KILLER MODE! ACTIVATED!', 'Now I go FAST and DANGEROUS!'],
+    kHit: ['BOOM! Got you!', 'Too fast for you!'],
+    kHurt: ['Hey! Ouch! HEY!', 'That one stung!'],
+    kOut: ['Out?! I was just warming up!'],
+    kSelf: ['I hit myself! Too much power!'],
+    kYouOut: ['You\'re OUT! Zoom zoom!'],
+  },
+  cheeky: {
+    cBig: ['Closed. Closed. Closed. Keep up!', 'Marks for days.'],
+    pcBig: ['Lucky marks.', 'Hmph. Showing off.'],
+    cLegWin: ['Shut the board. Shut the door.'],
+    pcLegWin: ['Okay, you closed it. Annoying.'],
+    kKiller: ['Guess who\'s a killer now.', 'Ooh, I\'m armed. Watch your number.'],
+    kHit: ['Nothing personal. Okay, a bit personal.', 'Was that your number? Whoops.'],
+    kHurt: ['Rude!', 'I\'ll remember that.'],
+    kOut: ['I\'m out? I demand a recount.'],
+    kSelf: ['Meant to do that. Obviously.'],
+    kYouOut: ['Bye bye! Wave from the sofa!'],
+  },
+  dry: {
+    cBig: ['Closed.', 'Efficient.'],
+    pcBig: ['Good marks.', 'Hm. Tidy.'],
+    cLegWin: ['Board closed. Leg.'],
+    pcLegWin: ['You closed it properly.'],
+    kKiller: ['Killer. Proceeding.', 'Armed.'],
+    kHit: ['A life. Yours.', 'Necessary.'],
+    kHurt: ['Hm. Fair.', 'Noted.'],
+    kOut: ['Out. Acceptable.'],
+    kSelf: ['Own number. Careless.'],
+    kYouOut: ['You\'re out. Patience next time.'],
+  },
+  cocky: {
+    cBig: ['Close, close, close. Easy.', 'Watch and learn.'],
+    pcBig: ['Fluke marks.', 'I let you close that.'],
+    cLegWin: ['Closed. Obviously.'],
+    pcLegWin: ['Enjoy it. It won\'t happen again.'],
+    kKiller: ['Killer. Who\'s first?', 'Everyone, say goodbye.'],
+    kHit: ['Too easy.', 'One less life. You\'re welcome.'],
+    kHurt: ['That was luck.', 'Hey! I\'m the killer here!'],
+    kOut: ['Out? The board moved.'],
+    kSelf: ['That was... a test.'],
+    kYouOut: ['And you\'re gone. Next!'],
+  },
+  cold: {
+    cBig: ['Numbers closing. As computed.', 'Efficiency: optimal.'],
+    pcBig: ['Unexpected marks. Logged.'],
+    cLegWin: ['Board closed. Leg secured.'],
+    pcLegWin: ['Anomaly. Recalibrating.'],
+    kKiller: ['Killer protocol engaged.', 'Targets acquired.'],
+    kHit: ['Target damaged.', 'Life removed.'],
+    kHurt: ['Damage detected.', 'Minor setback.'],
+    kOut: ['Eliminated. Impossible.'],
+    kSelf: ['Self-targeting error.'],
+    kYouOut: ['Human eliminated.'],
+  },
+};
+for (const v of Object.keys(MORE)) Object.assign(LINES[v], MORE[v]);
+
+export const DART_TALK_CHANCE = { start: 1, big: 0.7, max: 1, low: 0.4, bust: 0.9, pBig: 0.6, pMax: 1, pLow: 0.35, pBust: 0.8, legWin: 1, pLegWin: 1, win: 1, pWin: 1,
+  cBig: 0.6, pcBig: 0.5, cLegWin: 1, pcLegWin: 1, kKiller: 0.8, kHit: 0.7, kHurt: 0.6, kOut: 1, kSelf: 1, kYouOut: 1 };
 
 let lastLine = null;
 export function dartLine(rival, moment, rng = Math.random) {
