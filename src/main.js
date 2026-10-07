@@ -22,14 +22,16 @@ import { hostGame, joinGame, cleanCode } from './net.js';
 import { newCup, nextMatch, record as cupRecordResult, quickMatch, youAreOut, involvesYou, YOU, ROUND_NAMES, ROUND_GAMES } from './cup.js';
 import { decodeFeel, feelLink } from './share.js';
 import { LESSONS, LESSON_BALLS, lessonById, judgeHit, judgeShot, judgeServe, starsFor } from './lessons.js';
+import { createGolf } from './golf/game.js';
+import { HOLES as GOLF_HOLES, coursePar } from './golf/course.js';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
 // ------------------------------------------------------------- settings --
 const FEEL = { size: PH.PADDLE.radius, bounce: PH.PADDLE.e, grip: PH.PADDLE.mu, power: 1, smooth: 0 };
-const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex' };
+const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1 };
 const settings = load('sh_settings', DEFAULTS);
 settings.feel = { ...FEEL, ...(settings.feel || {}) };
 // Paddle feel (Settings > Paddle feel): each step, its limits, and how to show it.
@@ -73,6 +75,7 @@ scene.background = BG;
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.02, 80);
 const DESK_CAM = { p: new V3(0, 1.58, 2.55), look: new V3(0, 0.82, -0.7) };
 function resetDeskCamera() {
+  if (G.mode === 'golf' && golf?.active) { golf.snapCamera(); return; }   // golf has its own camera
   if (G.view) {   // courtside, like a TV camera
     camera.position.set(3.4, 1.9, 1.1);
     camera.lookAt(0, 0.8, -0.1);
@@ -103,7 +106,8 @@ sfx.enabled = settings.sound;
 // ----------------------------------------------------------------- state --
 const G = {
   role: 'solo',          // solo | host (a friend is connected) | guest
-  mode: 'menu',          // menu | match | practice | versus
+  sport: settings.sport === 'golf' ? 'golf' : 'tt',
+  mode: 'menu',          // menu | match | practice | versus | exhibition | lesson | golf
   paused: true,          // menu open
   tab: 'match',
   now: 0,
@@ -135,6 +139,8 @@ const G = {
   net: null,             // { link, code, friend: {name, assist} | null, error }
 };
 resetDeskCamera();
+
+let golf = null;         // the mini golf game (created once the world exists)
 
 function later(sec, fn) { G.timers.push({ t: G.now + sec, fn }); }
 function runTimers() {
@@ -191,10 +197,16 @@ scene.add(friendDesk.outer);
 
 function attachHands() {
   const pc = paddleCtrl();
-  if (G.inXR && pc) pc.grip.add(paddleRig);
-  else if (!G.inXR) desk.inner.add(paddleRig);
-  else scene.remove(paddleRig);
-  for (const c of ctrls) c.model.visible = c !== pc;
+  // Mini golf in VR: a putter hangs from the paddle hand's pointer instead.
+  const putting = !!golf && G.mode === 'golf' && G.inXR && !!pc;
+  if (putting) { paddleRig.removeFromParent(); pc.ray.add(golf.putterRig); }
+  else {
+    golf?.putterRig.removeFromParent();
+    if (G.inXR && pc) pc.grip.add(paddleRig);
+    else if (!G.inXR) desk.inner.add(paddleRig);
+    else paddleRig.removeFromParent();
+  }
+  for (const c of ctrls) c.model.visible = c !== pc || putting;
   applyAngle();
 }
 attachHands();
@@ -213,6 +225,16 @@ const hex = n => '#' + n.toString(16).padStart(6, '0');
 // ------------------------------------------------- characters and effects --
 const confetti = createConfetti(scene);
 const ghost = createGhost(scene, makePaddle);
+// Mini golf, the hall's second sport.
+golf = createGolf({
+  scene, camera, raycaster, sfx, settings, stats, save,
+  showBanner: (...a) => showBanner(...a), setView: v => setView(v),
+  isXR: () => G.inXR, viewerXZ: () => viewerSpot(),
+  haptic: (i, ms) => haptic(paddleCtrl(), i, ms),
+  cheer: a => W.crowd.cheer(a),
+  confetti: p => confetti.burst(p, 220, 0.9),
+  roundOver: () => { G.mode = 'menu'; openMenu('golf'); },
+});
 const bubble = createBubble(scene);
 const trophy = buildTrophy();
 trophy.root.position.set(1.75, 0, -0.9);
@@ -370,12 +392,19 @@ scene.add(menu.mesh);
 
 function renderMenu(ui) {
   const { w } = ui;
+  const golfing = G.sport === 'golf';
   ui.text('SPORTS HALL', 60, 74, { size: 32, weight: 800, color: C.accent });
-  ui.text('Table Tennis', 60, 128, { size: 52, weight: 800 });
-  const honours = [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
-  if (honours) ui.text(honours, w - 60, 120, { size: 36, weight: 800, color: '#d4af37', align: 'right' });
-  const tabs = [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
-  const tw = (w - 120 - 5 * 14) / 6;
+  ui.text(golfing ? 'Mini Golf' : 'Table Tennis', 60, 128, { size: 52, weight: 800 });
+  // Which sport: the two big switches at the top right.
+  ui.button('sport:tt', w - 60 - 2 * 250 - 14, 36, 250, 70, 'Table Tennis', { selected: !golfing, size: 30 });
+  ui.button('sport:golf', w - 60 - 250, 36, 250, 70, 'Mini Golf', { selected: golfing, size: 30 });
+  const honours = golfing
+    ? (stats.golfBest ? `Best round: ${stats.golfBest} (par ${coursePar()})` : '')
+    : [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
+  if (honours) ui.text(honours, w - 60, 140, { size: 30, weight: 800, color: '#d4af37', align: 'right' });
+  const tabs = golfing ? [['golf', 'Play'], ['settings', 'Settings']]
+    : [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
+  const tw = (w - 120 - (tabs.length - 1) * 14) / tabs.length;
   const parentTab = { watch: 'match', feel: 'settings', share: 'settings', lessons: 'practice' }[G.tab] ?? G.tab;
   tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 60 + i * (tw + 14), 160, tw, 78, label, { selected: parentTab === id, size: 34 }));
   const L = 60, R = w - 60, width = R - L;
@@ -429,6 +458,19 @@ function renderMenu(ui) {
       else ui.text('Locked', R - 30, y + 48, { size: 30, weight: 700, color: '#55627e', align: 'right', base: 'middle' });
     });
     if (inMatch) ui.button('resume', L, 950, width, 64, 'Resume match', { primary: true, size: 32 });
+  } else if (G.tab === 'golf') {
+    dim(`Six holes round the hall: ${GOLF_HOLES.map(h => h.name).join(', ')}. Par ${coursePar()}.`, 298);
+    dim(G.inXR ? 'Point your paddle hand at the floor: that\'s your putter. Swing it gently through the ball.'
+      : isTouch() ? 'Drag back from the ball and let go to putt: the further you drag, the harder it goes.'
+        : 'Drag back from the ball with the mouse and let go to putt: further = harder.', 342);
+    dim(G.inXR ? 'Free hand trigger: go to your ball. Six strokes at most on each hole.' : 'Six strokes at most on each hole.', 382);
+    label('Players (take turns)', 450);
+    ui.options('golfPlayers', L, 468, width, 92, [[1, '1 player'], [2, '2 players'], [3, '3 players'], [4, '4 players']], settings.golfPlayers);
+    ui.text(stats.golfBest ? `Your best round: ${stats.golfBest} (${stats.golfBest - coursePar() === 0 ? 'level par' : stats.golfBest < coursePar() ? `${coursePar() - stats.golfBest} under` : `${stats.golfBest - coursePar()} over`})` : 'No rounds yet. Par is ' + coursePar() + '.', L, 630, { size: 36, weight: 800, color: stats.golfBest ? '#d4af37' : C.text });
+    if (G.mode === 'golf' && golf.inProgress()) {
+      ui.button('resume', L, 700, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
+      ui.button('golf:start', L + width / 2 + 10, 700, width / 2 - 10, 120, 'New round', { size: 42 });
+    } else ui.button('golf:start', L, 700, width, 120, 'Start a round', { primary: true, size: 50 });
   } else if (G.tab === 'cup') {
     renderCup(ui, L, R, width, dim);
   } else if (G.tab === 'share') {
@@ -683,6 +725,15 @@ function onMenuClick(id) {
   sfx.play('click');
   const [k, v, dir] = id.split(':');
   if (k === 'tab') { G.tab = v; G.shareNote = ''; }
+  else if (k === 'sport') {
+    if (v !== G.sport) {
+      if (G.mode !== 'menu') { clearPlay(); G.mode = 'menu'; }
+      G.sport = settings.sport = v;
+      G.tab = v === 'golf' ? 'golf' : 'match';
+    }
+  }
+  else if (id === 'golf:start') startGolf();
+  else if (k === 'golfPlayers') settings.golfPlayers = +v;
   else if (k === 'cup') {
     if (v === 'new') { G.cup = newCup(); saveCup(); }
     else if (v === 'play') cupPlayNext(false);
@@ -726,6 +777,8 @@ function onMenuClick(id) {
 
 function openMenu(tab) {
   if (tab) G.tab = tab;
+  else if (G.sport === 'golf' && !['golf', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
+  else if (G.sport === 'tt' && G.tab === 'golf') G.tab = 'match';
   G.paused = true;
   menu.mesh.visible = true;
   menu.redraw();
@@ -749,7 +802,21 @@ function clearPlay() {
   W.robot.root.visible = true; W.machine.root.visible = false;
   robot2.root.visible = false; desk.outer.visible = true;
   friendAvatar.root.visible = false; friendDesk.outer.visible = false;
+  // Back from mini golf: the table and its scoreboard return.
+  if (golf?.active) { golf.stop(); attachHands(); }
+  W.table.visible = true; scoreboard.mesh.visible = true;
   setView(null);
+}
+
+function startGolf(players = settings.golfPlayers) {
+  clearPlay();
+  G.mode = 'golf';
+  W.table.visible = false; W.robot.root.visible = false; scoreboard.mesh.visible = false;
+  desk.outer.visible = false;
+  closeMenu();
+  golf.start(players);
+  attachHands();
+  if (!G.inXR) golf.snapCamera();
 }
 
 // Where you are: null = behind your end of the table; COURTSIDE = a seat by
@@ -1594,6 +1661,8 @@ function onSelect(c) {
     return;
   }
   if (c !== offCtrl()) return;
+  // Mini golf: the free hand's trigger takes you to your ball.
+  if (G.mode === 'golf') { if (golf.phase === 'aim') golf.goToBall(); return; }
   // In a lesson, the free hand's trigger replays the stroke (unless you're holding a ball to serve).
   if (G.mode === 'lesson' && G.ballState !== 'held') showDemo(1);
   else toss(P);
@@ -1683,9 +1752,16 @@ function aimAt(e) {
   const lift = e.pointerType === 'touch' ? 70 : 0;
   desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -((e.clientY - lift) / window.innerHeight) * 2 + 1);
 }
-renderer.domElement.addEventListener('pointermove', aimAt);
+const ndcOf = e => new THREE.Vector2(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+renderer.domElement.addEventListener('pointermove', e => {
+  if (G.mode === 'golf' && !menu.mesh.visible && !G.inXR) { desk.mouse.copy(ndcOf(e)); golf.pointerMove(ndcOf(e)); return; }
+  aimAt(e);
+});
+renderer.domElement.addEventListener('pointerup', () => { if (G.mode === 'golf' && !G.inXR) golf.pointerUp(); });
 renderer.domElement.addEventListener('pointerdown', e => {
   sfx.unlock();
+  // Mini golf on a screen: press, drag back from the ball, let go.
+  if (G.mode === 'golf' && !menu.mesh.visible && !G.inXR) { golf.pointerDown(ndcOf(e)); return; }
   if (e.pointerType === 'touch' && !menu.mesh.visible) { aimAt(e); return; }
   desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
   if (G.inXR || G.role === 'guest' || !menu.mesh.visible) return;
@@ -1710,6 +1786,7 @@ function deskUpdate(dt) {
     const hit = raycaster.intersectObject(menu.mesh, false)[0];
     menu.hover(hit ? hit.uv : null);
   }
+  if (G.mode === 'golf') return;          // golf handles its own pointer
   const p = new V3();
   if (!G.autoplay && raycaster.ray.intersectPlane(deskPlane, p)) desk.aim(p.x, p.y);
   const b = G.ball;
@@ -1744,7 +1821,8 @@ function onFrame(t, frame, render = true) {
     }
     const holder = paddleRig.parent;
     pose.sample(paddle.centre, dt, !!holder && (G.inXR ? holder.visible : G.desk));
-    if (!G.paused) simulate(dt);
+    if (G.mode === 'golf') golf.update(dt, { xr: G.inXR, paused: G.paused, holder: golf.putterRig.parent });
+    else if (!G.paused) simulate(dt);
     if (G.ballState === 'held' && G.ball) G.ball.p = heldBallPos();
 
     W.setBall(G.ball ? G.ball.p : null, G.ball ? PH.len(G.ball.v) : 0);
@@ -1875,6 +1953,7 @@ menu.mesh.visible = false;
 // Handy for testing from the console.
 window.__sh = {
   debugXR: () => ({ needRecentre, tablePose: { ...tablePose }, hasBase: !!baseSpace, custom: renderer.xr.getReferenceSpace() !== baseSpace }),
+  get golf() { return golf; }, startGolf,
   G, PH, desk, friendDesk, sfx, advance, settings, stats, W, startMatch, startPractice, startVersus, startHosting, openMenu, closeMenu, toss, pose,
   ctrls, renderer, camera, scene, menu, onMenuClick, enterXR, robotSay, burst, rivalById, startGuest,
 };

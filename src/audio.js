@@ -128,6 +128,18 @@ export class Sfx {
       case 'groan':
         this._noise(out, 1.0, 0.12, 'lowpass', 500, 0.6, 0, 0.2);
         break;
+      case 'putt':      // a crisp metal-on-ball click
+        this._tone(out, 2300, 0.035, 0.3 * k, 'triangle', 0, 1800);
+        this._noise(out, 0.03, 0.25 * k, 'highpass', 2500, 0.8);
+        break;
+      case 'clack':     // ball off a wooden wall
+        this._tone(out, 700, 0.05, 0.25 * k, 'square', 0, 500);
+        this._noise(out, 0.04, 0.15 * k, 'bandpass', 1200, 2);
+        break;
+      case 'cup':       // the ball dropping in and rattling round the cup
+        this._tone(out, 520, 0.12, 0.35, 'sine', 0, 300);
+        for (let i = 0; i < 4; i++) this._tone(out, 1500 + i * 120, 0.03, 0.12, 'triangle', 0.08 + i * 0.07);
+        break;
       case 'fanfare':
         [523, 659, 784, 1047].forEach((f, i) => this._tone(out, f, i === 3 ? 0.6 : 0.16, 0.22, 'triangle', i * 0.13));
         break;

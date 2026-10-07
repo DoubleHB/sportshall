@@ -14,6 +14,15 @@ step. Live at https://doublehb.github.io/sportshall/
 - **Phones and tablets**: drag to move the paddle, Serve and Menu buttons, wider view when upright. Works for playing solo and for joining a friend.
 - **Friend**: host a game from the headset; a friend on a PC opens the same link, chooses "Join a friend's game" and types the 4-letter code. Peer-to-peer through PeerJS (free cloud matchmaker); the host runs the physics and the friend's browser only sends where their mouse points.
 
+**Mini golf** (the Mini Golf switch at the top of the menu): six holes on the hall
+floor (Warm Up, Dog Leg, Bumper Alley, The Hill, Windmill, The Bowl; par 15) for
+1-4 players taking turns, with a scorecard, a 6-stroke limit and best rounds. In
+VR a putter hangs from your paddle hand's pointer and you swing it; the free
+hand's trigger takes you to your ball, side-on. On a screen, drag back from the
+ball and let go. `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
+walls, bumpers, slopes, windmill gate, cup, putter contact; tested in
+`tests/golf.test.mjs`) and `src/golf/game.js` (visuals, turns, scorecard).
+
 Robots celebrate (fist pumps, spins, dances, sulks), talk in speech bubbles with
 beeps or a real voice (Settings > Robot talk), and confetti flies when you win.
 
