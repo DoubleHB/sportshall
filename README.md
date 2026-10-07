@@ -6,9 +6,10 @@ step. Live at https://doublehb.github.io/sportshall/
 
 - **Match**: quick play against a robot at four levels.
 - **Ladder**: six robot characters (Rookie, Bolt, Spinny, Chopper, Vortex, Omega), each with its own style, colours and trash talk. Beat one to unlock the next; beat Omega to become champion (a trophy appears in the hall).
+- **Cup**: an 8-player knockout (you + seven robots, including the cup-only Zippy). You play your own matches; watch or skip the robot matches (skipped ones are settled by rating-based point odds). Quarters and semis are one game, the final best of three. The bracket is saved between visits.
 - **Practice**: ball machine with pace, spin and placement, plus targets.
 - **Exhibition** (Match > Watch two robots play): pick any two robots and watch from a courtside seat; they trash-talk each other.
-- **Paddle feel** (Settings > Paddle feel…): sweet spot size, bounce, spin grip, swing power and smoothing, plus a log of your last hits (swing speed, ball speed, spin, result).
+- **Paddle feel** (Settings > Paddle feel…): sweet spot size, bounce, spin grip, swing power and smoothing, plus a log of your last hits (swing speed, ball speed, spin, result). "Share these…" makes a link and QR code (`?feel=82_86_60_105_0_-10`, see `src/share.js`); opening it asks before changing anything.
 - **Phones and tablets**: drag to move the paddle, Serve and Menu buttons, wider view when upright. Works for playing solo and for joining a friend.
 - **Friend**: host a game from the headset; a friend on a PC opens the same link, chooses "Join a friend's game" and types the 4-letter code. Peer-to-peer through PeerJS (free cloud matchmaker); the host runs the physics and the friend's browser only sends where their mouse points.
 

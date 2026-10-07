@@ -7,6 +7,8 @@ import { Referee, Match, P, O } from '../src/rules.js';
 import { Bot, Machine, serveFrom, LEVELS } from '../src/ai.js';
 import { assistShot } from '../src/assist.js';
 import { simulateRally, rng32, simStats } from './sim.mjs';
+import { newCup, nextMatch, record, quickMatch, youAreOut, YOU, ROUND_GAMES } from '../src/cup.js';
+import { encodeFeel, decodeFeel } from '../src/share.js';
 
 const T = TABLE;
 
@@ -226,6 +228,51 @@ test('characters tweak the robot', () => {
   assert.equal(b.L.chop, 0.6);
   assert.deepEqual(b.L.spin, [150, 300]);
   assert.equal(b.L.react, LEVELS.medium.react);
+});
+
+test('cup: draw puts you and Omega in opposite halves, results flow to the final', () => {
+  for (let s = 1; s < 30; s++) {
+    const cup = newCup(rng32(s));
+    const slots = cup.rounds[0].flatMap(m => [m.a, m.b]);
+    assert.equal(new Set(slots).size, 8);
+    const half = id => (slots.indexOf(id) < 4 ? 0 : 1);
+    assert.notEqual(half(YOU), half('omega'));
+  }
+  const cup = newCup(rng32(5));
+  let n, played = 0;
+  while ((n = nextMatch(cup))) {
+    const winner = n.m.a === YOU || n.m.b === YOU ? YOU : quickMatch(n.m.a, n.m.b, ROUND_GAMES[n.r], rng32(played)).winner;
+    record(cup, n.r, n.i, winner, [{ a: 11, b: 5 }]);
+    played++;
+  }
+  assert.equal(played, 7);
+  assert.equal(cup.champion, YOU);
+  assert.equal(youAreOut(cup), false);
+});
+
+test('cup: quick results favour the stronger robot and follow the scoring rules', () => {
+  const rng = rng32(9);
+  let omegaWins = 0;
+  for (let i = 0; i < 200; i++) {
+    const r = quickMatch('omega', 'rookie', 1, rng);
+    const g = r.score[0];
+    assert.ok(Math.max(g.a, g.b) >= 11 && Math.abs(g.a - g.b) >= 2);
+    if (r.winner === 'omega') omegaWins++;
+  }
+  assert.ok(omegaWins > 190, `${omegaWins}`);
+  const bo3 = quickMatch('spinny', 'chopper', 3, rng);
+  assert.ok(bo3.score.length >= 2 && bo3.score.length <= 3);
+});
+
+test('share: paddle feel survives a link, and junk is refused', () => {
+  const feel = { size: 0.086, bounce: 0.88, grip: 0.65, power: 1.1, smooth: 0.3 };
+  const code = encodeFeel(feel, -15);
+  assert.match(code, /^[-\d_]+$/);
+  const back = decodeFeel(code);
+  assert.deepEqual(back, { feel, angle: -15 });
+  assert.equal(decodeFeel('<script>'), null);
+  assert.equal(decodeFeel('1_2_3'), null);
+  assert.equal(decodeFeel('999_999_999_999_99_400').feel.bounce, 0.96);   // clamped
 });
 
 test('robot v robot rallies (balance)', () => {

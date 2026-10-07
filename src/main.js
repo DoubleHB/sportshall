@@ -19,8 +19,10 @@ import { RIVALS, QUICK, rivalById, talkLine, TALK_CHANCE, VOICE } from './rivals
 import { createConfetti, createBubble, buildTrophy, buildHuman, FLIP } from './fx.js';
 import { DeskPaddle, BladeTracker, DESK_Z } from './desk.js';
 import { hostGame, joinGame, cleanCode } from './net.js';
+import { newCup, nextMatch, record as cupRecordResult, quickMatch, youAreOut, involvesYou, YOU, ROUND_NAMES, ROUND_GAMES } from './cup.js';
+import { decodeFeel, feelLink } from './share.js';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -42,8 +44,12 @@ function applyFeel() {
   PH.PADDLE.radius = f.size; PH.PADDLE.e = f.bounce; PH.PADDLE.mu = f.grip;
   pose.power = f.power; pose.smooth = f.smooth;    // (only called once `pose` exists)
 }
-const stats = load('sh_stats', { wins: {}, losses: {}, bestStreak: 0, ladder: { beaten: [], champion: false } });
+const stats = load('sh_stats', { wins: {}, losses: {}, bestStreak: 0, ladder: { beaten: [], champion: false }, cups: 0 });
 if (!stats.ladder) stats.ladder = { beaten: [], champion: false };
+stats.cups ??= 0;
+// The cup in progress (kept between visits).
+let cupSaved = null;
+try { cupSaved = JSON.parse(localStorage.getItem('sh_cup') || 'null'); } catch { /* none */ }
 function load(key, def) { try { return { ...def, ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return { ...def }; } }
 function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 const ASSIST = { off: 0, light: 0.55, full: 1 };
@@ -117,6 +123,9 @@ const G = {
   autoplay: false,
   log: [],               // recent point results, for testing
   hitLog: [],            // your recent hits, for Settings > Paddle feel
+  cup: cupSaved,         // the cup bracket (cup.js), or null
+  cupRef: null,          // { r, i }: the cup match being played or watched
+  shareNote: '',
   view: null,            // where VR puts you (null = behind your end of the table)
   inXR: false,
   mr: false,
@@ -204,7 +213,7 @@ const confetti = createConfetti(scene);
 const bubble = createBubble(scene);
 const trophy = buildTrophy();
 trophy.root.position.set(1.75, 0, -0.9);
-trophy.root.visible = !!stats.ladder.champion;
+trophy.root.visible = !!stats.ladder.champion || stats.cups > 0;
 scene.add(trophy.root);
 // The friend you host, at the far end, and the host as seen by a guest.
 const friendAvatar = buildHuman({ shirt: 0xff7a1a, hair: 0x6b3a1e });
@@ -346,10 +355,11 @@ function renderMenu(ui) {
   const { w } = ui;
   ui.text('SPORTS HALL', 60, 74, { size: 32, weight: 800, color: C.accent });
   ui.text('Table Tennis', 60, 128, { size: 52, weight: 800 });
-  if (stats.ladder.champion) ui.text('★ Champion', w - 60, 120, { size: 40, weight: 800, color: '#d4af37', align: 'right' });
-  const tabs = [['match', 'Match'], ['ladder', 'Ladder'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
-  const tw = (w - 120 - 4 * 14) / 5;
-  const parentTab = { watch: 'match', feel: 'settings' }[G.tab] ?? G.tab;
+  const honours = [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
+  if (honours) ui.text(honours, w - 60, 120, { size: 36, weight: 800, color: '#d4af37', align: 'right' });
+  const tabs = [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
+  const tw = (w - 120 - 5 * 14) / 6;
+  const parentTab = { watch: 'match', feel: 'settings', share: 'settings' }[G.tab] ?? G.tab;
   tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 60 + i * (tw + 14), 160, tw, 78, label, { selected: parentTab === id, size: 34 }));
   const L = 60, R = w - 60, width = R - L;
   const label = (s, y) => ui.text(s, L, y, { size: 32, weight: 650, color: C.dim });
@@ -402,6 +412,10 @@ function renderMenu(ui) {
       else ui.text('Locked', R - 30, y + 48, { size: 30, weight: 700, color: '#55627e', align: 'right', base: 'middle' });
     });
     if (inMatch) ui.button('resume', L, 950, width, 64, 'Resume match', { primary: true, size: 32 });
+  } else if (G.tab === 'cup') {
+    renderCup(ui, L, R, width, dim);
+  } else if (G.tab === 'share') {
+    renderShare(ui, L, R, width, dim);
   } else if (G.tab === 'practice') {
     dim('The ball machine feeds you balls. Hit them back onto the table, and aim for the glowing targets.', 292);
     label('Pace', 352);
@@ -470,9 +484,10 @@ function renderMenu(ui) {
     const log = G.hitLog;
     ui.text('Your last hits', L, 800, { size: 30, weight: 700, color: C.dim });
     if (!log.length) dim('Play a few shots and they show up here.', 846, 28);
-    log.slice(-4).reverse().forEach((h, i) => {
+    log.slice(-3).reverse().forEach((h, i) => {
       ui.text(`Swing ${h.pad.toFixed(1)} m/s → ball ${Math.round(h.out * 3.6)} km/h · ${h.rpm} rpm${h.assisted ? ' · assist helped' : ''}${h.result ? ` · ${h.result}` : ''}`, L, 846 + i * 38, { size: 26, weight: 500, color: h.result === 'landed' ? C.good : h.result ? '#ffb4a8' : C.text });
     });
+    ui.button('feel:share', R - 840, 930, 300, 70, 'Share these…', { size: 30 });
     ui.button('feel:reset', R - 520, 930, 250, 70, 'Reset all', { size: 30 });
     ui.button('tab:settings', R - 250, 930, 250, 70, '‹ Back', { size: 30 });
   }
@@ -484,10 +499,164 @@ function renderMenu(ui) {
   ui.text(`v${VERSION}`, w - 40, 1080, { size: 22, weight: 500, color: '#55627e', align: 'right' });
 }
 
+// ------------------------------------------------------------------ cup --
+const entrantName = id => (id === YOU ? 'You' : rivalById(id).name);
+const entrantColour = id => (id === YOU ? '#7fd1ff' : hex(rivalById(id).look.accent));
+
+function renderCup(ui, L, R, width, dim) {
+  const cup = G.cup, g = ui.g;
+  if (!cup) {
+    dim('Eight players, one cup: you and seven robots in a knockout.', 300);
+    dim('Quarter-finals and semi-finals are one game to 11; the final is best of three.', 345);
+    dim('You only play your own matches; watch the robot matches or skip them.', 390);
+    ui.text(stats.cups ? `Cups won: ${stats.cups}` : 'No cups yet.', L, 470, { size: 40, weight: 800, color: stats.cups ? '#d4af37' : C.text });
+    ui.button('cup:new', L, 560, width, 120, 'Start a cup', { primary: true, size: 50 });
+    return;
+  }
+  const nx = nextMatch(cup), out = youAreOut(cup);
+  let status;
+  if (cup.champion === YOU) status = '★ You won the cup! ★';
+  else if (cup.champion) status = `${entrantName(cup.champion)} won the cup.${out ? ' Better luck next time!' : ''}`;
+  else status = `Next: ${ROUND_NAMES[nx.r]} · ${entrantName(nx.m.a)} v ${entrantName(nx.m.b)}${out && !involvesYou(nx.m) ? '   (you\'re out)' : ''}`;
+  ui.text(status, L, 296, { size: 34, weight: 800, color: cup.champion === YOU ? '#d4af37' : C.text });
+
+  // The bracket: quarter-finals, semi-finals, final.
+  const cols = [L, L + 480, L + 960], bw = 420, bh = 100;
+  const ys = [[345, 480, 615, 750], [412, 682], [547]];
+  ['Quarter-finals', 'Semi-finals', 'Final (best of 3)'].forEach((t, r) => ui.text(t, cols[r], 334, { size: 24, weight: 700, color: C.dim }));
+  g.strokeStyle = '#3a4866'; g.lineWidth = 3;
+  for (let r = 0; r < 2; r++) ys[r].forEach((y, i) => {
+    const ny = ys[r + 1][i >> 1] + bh / 2;
+    g.beginPath(); g.moveTo(cols[r] + bw, y + bh / 2); g.lineTo(cols[r] + bw + 30, y + bh / 2); g.lineTo(cols[r] + bw + 30, ny); g.lineTo(cols[r + 1], ny); g.stroke();
+  });
+  cup.rounds.forEach((round, r) => round.forEach((m, i) => {
+    const x = cols[r], y = ys[r][i];
+    const isNext = nx && nx.r === r && nx.i === i;
+    roundRect(g, x, y + 12, bw, bh, 18);
+    g.fillStyle = involvesYou(m) ? '#17284a' : '#1b2438'; g.fill();
+    g.lineWidth = isNext ? 5 : 2; g.strokeStyle = isNext ? C.accent : '#2c3954'; g.stroke();
+    [['a', 0], ['b', 1]].forEach(([k, row]) => {
+      const id = m[k], ty = y + 12 + 30 + row * 44;
+      if (!id) { ui.text('–', x + 24, ty + 8, { size: 28, weight: 600, color: '#55627e' }); return; }
+      const lost = m.winner && m.winner !== id;
+      g.beginPath(); g.arc(x + 30, ty, 11, 0, Math.PI * 2); g.fillStyle = entrantColour(id); g.fill();
+      ui.text(entrantName(id), x + 52, ty + 10, { size: 30, weight: m.winner === id ? 800 : 600, color: lost ? '#6b7896' : '#fff' });
+      if (m.score) {
+        const mine = s => (k === 'a' ? s.a : s.b), theirs = s => (k === 'a' ? s.b : s.a);
+        const shown = m.score.length === 1 ? mine(m.score[0]) : m.score.filter(s => mine(s) > theirs(s)).length;
+        ui.text(String(shown), x + bw - 24, ty + 10, { size: 32, weight: 800, align: 'right', color: lost ? '#6b7896' : '#ffd23f' });
+      }
+    });
+  }));
+
+  // What next.
+  const y = 890;
+  const inCupMatch = (G.mode === 'match' || G.mode === 'exhibition') && G.cupRef && G.match && !G.match.over;
+  if (inCupMatch) ui.button('resume', L, y, width - 320, 96, 'Resume the match', { primary: true, size: 40 });
+  else if (!nx) ui.button('cup:new', L, y, width - 320, 96, 'Start a new cup', { primary: true, size: 40 });
+  else if (involvesYou(nx.m)) {
+    const opp = nx.m.a === YOU ? nx.m.b : nx.m.a;
+    ui.button('cup:play', L, y, width - 320, 96, `Play ${entrantName(opp)} · ${ROUND_NAMES[nx.r]}`, { primary: true, size: 38 });
+  } else {
+    const bw2 = (width - 320 - 40) / 3;
+    ui.button('cup:watch', L, y, bw2, 96, 'Watch it', { primary: true, size: 34 });
+    ui.button('cup:skip', L + bw2 + 20, y, bw2, 96, 'Skip it', { size: 34 });
+    ui.button('cup:skipall', L + 2 * (bw2 + 20), y, bw2, 96, out ? 'Skip to the end' : 'Skip to my match', { size: 30 });
+  }
+  if (!inCupMatch && nx) ui.button('cup:new', R - 300, y, 300, 96, 'New draw', { size: 32 });
+}
+
+function saveCup() { save('sh_cup', G.cup); }
+
+// Record a cup result (score as games of { a, b } from the match's a side).
+function cupResult(r, i, winner, score) {
+  cupRecordResult(G.cup, r, i, winner, score);
+  saveCup();
+  if (G.cup.champion === YOU) {
+    stats.cups++; save('sh_stats', stats);
+    trophy.root.visible = true;
+    later(1.0, () => { burst(1.5); sound('fanfare'); W.crowd.cheer(2); });
+    return true;
+  }
+  return false;
+}
+
+function cupSkip(all) {
+  let nx;
+  while ((nx = nextMatch(G.cup)) && !involvesYou(nx.m)) {
+    const q = quickMatch(nx.m.a, nx.m.b, ROUND_GAMES[nx.r]);
+    cupResult(nx.r, nx.i, q.winner, q.score);
+    if (!all) break;
+  }
+  if (G.cup.champion && G.cup.champion !== YOU) showBanner(`${entrantName(G.cup.champion)} wins the cup`, '', hex(rivalById(G.cup.champion).look.accent), 3);
+}
+
+function cupPlayNext(watch) {
+  const nx = nextMatch(G.cup);
+  if (!nx) return;
+  const ref = { r: nx.r, i: nx.i }, games = ROUND_GAMES[nx.r];
+  if (watch) startExhibition({ near: nx.m.a, far: nx.m.b, games, cupRef: ref });
+  else startMatch({ rival: rivalById(nx.m.a === YOU ? nx.m.b : nx.m.a), games, cupRef: ref });
+}
+
+// ---------------------------------------------------- sharing paddle feel --
+let qrLib = null;
+async function loadQR() {
+  if (qrLib !== null) return;
+  try { qrLib = (await import('https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/+esm')).default; } catch { qrLib = false; }
+  if (G.tab === 'share') menu.redraw();
+}
+const shareLink = () => feelLink(location.origin + location.pathname, settings.feel, settings.angle);
+
+function renderShare(ui, L, R, width, dim) {
+  const link = shareLink(), g = ui.g;
+  dim('Send a friend your paddle feel and angle. When they open the link,', 300);
+  dim('the game asks them before it changes anything.', 340);
+  const size = 520, x = L, y = 380;
+  g.fillStyle = '#ffffff';
+  roundRect(g, x, y, size, size, 24); g.fill();
+  if (qrLib) {
+    const qr = qrLib(0, 'M'); qr.addData(link); qr.make();
+    const n = qr.getModuleCount(), cell = Math.floor((size - 60) / n), off = x + (size - cell * n) / 2, offY = y + (size - cell * n) / 2;
+    g.fillStyle = '#0e1320';
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) g.fillRect(off + c * cell, offY + r * cell, cell, cell);
+  } else ui.text(qrLib === false ? 'QR code unavailable' : 'Making the code…', x + size / 2, y + size / 2, { size: 30, weight: 600, align: 'center', base: 'middle', color: '#55627e' });
+  const tx = x + size + 50;
+  ui.text('Scan with a phone camera', tx, 420, { size: 38, weight: 800 });
+  ui.text('or send the link:', tx, 466, { size: 30, weight: 500, color: C.dim });
+  const [base, query] = link.split('?');
+  ui.text(base, tx, 530, { size: 28, weight: 600, color: '#9fd8ff' });
+  ui.text(`?${query}`, tx, 572, { size: 28, weight: 600, color: '#9fd8ff' });
+  const f = settings.feel;
+  ui.text(`Sweet spot ${Math.round(f.size * 200)} cm · bounce ${Math.round(f.bounce * 100)}% · grip ${Math.round(f.grip * 100)}%`, tx, 650, { size: 26, weight: 500, color: C.dim });
+  ui.text(`power ${Math.round(f.power * 100)}% · smoothing ${Math.round(f.smooth * 100)}% · angle ${settings.angle}°`, tx, 690, { size: 26, weight: 500, color: C.dim });
+  ui.button('share:copy', tx, 760, R - tx, 90, navigator.share && isTouch() ? 'Share the link' : 'Copy the link', { primary: true, size: 36 });
+  if (G.shareNote) ui.text(G.shareNote, tx, 890, { size: 28, weight: 600, color: G.shareNote.startsWith('Link') ? C.good : C.bad });
+  ui.button('tab:feel', R - 250, 930, 250, 70, '‹ Back', { size: 30 });
+}
+
+async function copyShareLink() {
+  const link = shareLink();
+  try {
+    if (navigator.share && isTouch()) { await navigator.share({ title: 'My Sports Hall paddle', url: link }); G.shareNote = 'Link shared'; }
+    else { await navigator.clipboard.writeText(link); G.shareNote = 'Link copied. Paste it into a message.'; }
+  } catch { G.shareNote = 'Can\'t copy here: scan the code with a phone instead.'; }
+  menu.redraw();
+}
+
 function onMenuClick(id) {
   sfx.play('click');
   const [k, v, dir] = id.split(':');
-  if (k === 'tab') G.tab = v;
+  if (k === 'tab') { G.tab = v; G.shareNote = ''; }
+  else if (k === 'cup') {
+    if (v === 'new') { G.cup = newCup(); saveCup(); }
+    else if (v === 'play') cupPlayNext(false);
+    else if (v === 'watch') cupPlayNext(true);
+    else if (v === 'skip') cupSkip(false);
+    else if (v === 'skipall') cupSkip(true);
+  }
+  else if (id === 'share:copy') copyShareLink();
+  else if (id === 'feel:share') { G.tab = 'share'; G.shareNote = ''; loadQR(); }
   else if (k === 'feel') {
     if (v === 'reset') settings.feel = { ...FEEL };
     else {
@@ -534,7 +703,7 @@ function toggleMenu() { if (G.paused) closeMenu(); else openMenu(); }
 
 // ------------------------------------------------------------ game flow --
 function clearPlay() {
-  G.timers = []; G.ball = null; G.ballState = 'none'; G.ref = null; G.ladder = false;
+  G.timers = []; G.ball = null; G.ballState = 'none'; G.ref = null; G.ladder = false; G.cupRef = null;
   G.streak = { who: null, n: 0 };
   W.setBall(null);
   targets.root.visible = false;
@@ -564,36 +733,39 @@ function placeMenu() {
   menu.mesh.rotation.set(-0.12, s.th, 0, 'YXZ');
 }
 
-function startExhibition() {
+// opts: { near, far, games, cupRef } (default: the robots picked on the Watch page)
+function startExhibition({ near = settings.exNear, far = settings.exFar, games = settings.games, cupRef = null } = {}) {
   clearPlay();
   G.mode = 'exhibition';
-  setRival(rivalById(settings.exFar));
-  G.rivalP = rivalById(settings.exNear);
+  G.cupRef = cupRef;
+  setRival(rivalById(far));
+  G.rivalP = rivalById(near);
   robot2.setLook(G.rivalP.look);
   G.botP.setLevel(G.rivalP.level, G.rivalP.tweak);
   G.botP.reset();
   robot2.root.visible = true;
   desk.outer.visible = false;
-  G.match = new Match({ games: settings.games, firstServer: Math.random() < 0.5 ? P : O });
+  G.match = new Match({ games, firstServer: Math.random() < 0.5 ? P : O });
   setView(COURTSIDE);
   closeMenu();
   drawScoreboard();
-  showBanner(`${G.rivalP.name} v ${G.rival.name}`, 'Exhibition · sit back and enjoy it', C.accent, 3);
+  showBanner(`${G.rivalP.name} v ${G.rival.name}`, cupRef ? `Cup ${ROUND_NAMES[cupRef.r].toLowerCase()}` : 'Exhibition · sit back and enjoy it', C.accent, 3);
   later(0.8, () => robotSay('start', true, P));
   later(2.4, () => robotSay('start', true, O));
   later(3.6, newPoint);
 }
 
-// opts: { rival, ladder } (default: the quick-play robot for the chosen level)
-function startMatch({ rival = rivalById(QUICK[settings.level]), ladder = false } = {}) {
+// opts: { rival, ladder, games, cupRef } (default: the quick-play robot for the chosen level)
+function startMatch({ rival = rivalById(QUICK[settings.level]), ladder = false, games = null, cupRef = null } = {}) {
   clearPlay();
   G.mode = 'match';
   G.ladder = ladder;
+  G.cupRef = cupRef;
   setRival(rival);
-  G.match = new Match({ games: ladder ? rival.games : settings.games, firstServer: Math.random() < 0.5 ? P : O });
+  G.match = new Match({ games: games ?? (ladder ? rival.games : settings.games), firstServer: Math.random() < 0.5 ? P : O });
   closeMenu();
   drawScoreboard();
-  showBanner(ladder ? `Ladder: ${rival.name}` : `v ${rival.name}`, `${G.match.server === P ? 'You serve first' : `${rival.name} serves first`}${G.match.games > 1 ? ` · best of ${G.match.games}` : ''}`, hex(rival.look.accent), 2.4);
+  showBanner(cupRef ? `Cup ${ROUND_NAMES[cupRef.r].toLowerCase()}: ${rival.name}` : ladder ? `Ladder: ${rival.name}` : `v ${rival.name}`, `${G.match.server === P ? 'You serve first' : `${rival.name} serves first`}${G.match.games > 1 ? ` · best of ${G.match.games}` : ''}`, hex(rival.look.accent), 2.4);
   later(0.9, () => robotSay('start', true));
   later(2.4, newPoint);
 }
@@ -883,9 +1055,17 @@ function pointOver(res) {
         later(1.2, () => { burst(1.4); sound('fanfare'); W.crowd.cheer(2); });
       } else sub = `${games} · ${next.name} unlocked`;
     }
+    if (G.cupRef) {
+      const { r: cr, i: ci } = G.cupRef, cm = G.cup.rounds[cr][ci], youA = cm.a === YOU;
+      const won = cupResult(cr, ci, you ? YOU : G.rival.id, m.history.map(s => (youA ? { a: s.P, b: s.O } : { a: s.O, b: s.P })));
+      tab = 'cup';
+      if (won) { title = 'CUP WINNERS!'; sub = `You beat ${them} in the final: ${games}`; }
+      else if (you) sub = `${games} · through to the ${ROUND_NAMES[cr + 1].toLowerCase()}`;
+      else sub = `${games} · out in the ${ROUND_NAMES[cr].toLowerCase()}`;
+    }
     save('sh_stats', stats);
     G.lastResult = `${you ? 'You won' : `${them} won`} against ${them}: ${games}`;
-    showBanner(title, sub, you ? (title === 'CHAMPION!' ? '#d4af37' : C.good) : C.bad, 4.5);
+    showBanner(title, sub, you ? (title === 'CHAMPION!' || title === 'CUP WINNERS!' ? '#d4af37' : C.good) : C.bad, 4.5);
     later(5, () => { G.mode = 'menu'; openMenu(tab); });
     return;
   }
@@ -923,8 +1103,16 @@ function exhibitionPoint(res, r, hits) {
     const games = G.match.history.map(s => `${s[win]}–${s[lose]}`).join(', ');
     burst(1);
     sound('fanfare');
+    let tab = 'watch';
+    if (G.cupRef) {
+      // In a cup match the near robot (P) is the match's a side.
+      const { r: cr, i: ci } = G.cupRef, cm = G.cup.rounds[cr][ci];
+      cupResult(cr, ci, win === P ? cm.a : cm.b, G.match.history.map(s => ({ a: s.P, b: s.O })));
+      tab = 'cup';
+    }
     showBanner(`${name} wins!`, games, hex(rival(win).look.accent), 5);
-    later(6.5, () => { G.mode = 'menu'; openMenu('watch'); });
+    // Back to your own end of the table for the menu.
+    later(6.5, () => { G.mode = 'menu'; robot2.root.visible = false; desk.outer.visible = true; setView(null); openMenu(tab); });
     return;
   }
   if (r.game) {
@@ -1470,6 +1658,25 @@ async function setupButtons() {
   // Buttons for touch screens (no keyboard for Space and Esc).
   $('touch-serve').onclick = () => { sfx.unlock(); if (G.role === 'guest') G.net?.link?.send({ t: 'toss' }); else toss(P); };
   $('touch-menu').onclick = () => { sfx.unlock(); toggleMenu(); };
+  // Paddle settings shared by a friend (?feel=...): ask before using them.
+  const offered = decodeFeel(new URLSearchParams(location.search).get('feel'));
+  if (offered) {
+    const f = offered.feel, box = $('feel-offer');
+    $('feel-offer-text').textContent = `Sweet spot ${Math.round(f.size * 200)} cm · bounce ${Math.round(f.bounce * 100)}% · spin grip ${Math.round(f.grip * 100)}% · swing power ${Math.round(f.power * 100)}% · smoothing ${Math.round(f.smooth * 100)}% · paddle angle ${offered.angle}°`;
+    box.hidden = false;
+    const done = text => {
+      box.querySelector('.row').remove();
+      $('feel-offer-text').textContent = text;
+      const u = new URL(location.href); u.searchParams.delete('feel');
+      history.replaceState(null, '', u);
+    };
+    $('feel-yes').onclick = () => {
+      settings.feel = { ...offered.feel }; settings.angle = offered.angle;
+      save('sh_settings', settings); applyFeel(); applyAngle();
+      done('Done: you\'re using their paddle settings. Settings > Paddle feel has a Reset button.');
+    };
+    $('feel-no').onclick = () => { done('No changes made.'); setTimeout(() => { box.hidden = true; }, 1500); };
+  }
   // Join a friend: show the little form.
   const form = $('join-form'), codeIn = $('join-code'), nameIn = $('join-name'), assistIn = $('join-assist'), jnote = $('join-note');
   try { nameIn.value = localStorage.getItem('sh_name') || ''; } catch { /* no storage */ }

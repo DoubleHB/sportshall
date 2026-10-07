@@ -40,9 +40,20 @@ export const RIVALS = [
   },
 ];
 
+// Robots you only meet in the cup.
+export const CUP_ONLY = [
+  {
+    id: 'zippy', name: 'Zippy', level: 'hard', games: 3, voice: 'cheeky',
+    bio: 'A sidespin trickster. The ball never goes quite where you expect.',
+    look: { body: 0xe4fff6, accent: 0x14c9a0, eyes: 0x6dffd9 },
+    tweak: { sideSpin: 95, spin: [80, 200], aggression: 0.7 },
+  },
+];
+export const ALL_ROBOTS = [...RIVALS, ...CUP_ONLY];
+
 // Quick-play opponent for each level.
 export const QUICK = { easy: 'rookie', medium: 'spinny', hard: 'vortex', pro: 'omega' };
-export const rivalById = id => RIVALS.find(r => r.id === id) ?? RIVALS[0];
+export const rivalById = id => ALL_ROBOTS.find(r => r.id === id) ?? RIVALS[0];
 
 // Lines by personality and moment. {you} = the player's name on the board.
 const LINES = {

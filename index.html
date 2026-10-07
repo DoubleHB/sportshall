@@ -47,6 +47,12 @@
   button span.d { display: block; font-size: 14px; color: inherit; opacity: 0.8; margin-top: 2px; }
   #xr-note { color: var(--dim); font-size: 14px; min-height: 20px; margin: 6px 2px 0; line-height: 1.4; }
   #overlay { overflow-y: auto; }
+  #feel-offer { margin: 0 0 16px; padding: 14px 16px; border-radius: 16px; border: 1px solid #d4af37; background: #1d1a10; }
+  #feel-offer[hidden] { display: none; }
+  #feel-offer b { color: #ffd76a; }
+  #feel-offer-text { color: var(--dim); font-size: 14px; margin: 6px 0 10px; line-height: 1.4; }
+  #feel-offer .row { display: flex; gap: 10px; }
+  #feel-offer button { margin: 0; padding: 10px 14px; justify-content: center; font-weight: 700; }
   #join-form { margin: -2px 0 12px; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: #141b2c; }
   #join-form .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
   #join-form .row + .row { margin-top: 10px; }
@@ -78,6 +84,11 @@
     <div class="brand">SPORTS HALL</div>
     <h1>Table Tennis</h1>
     <p class="sub">Play a robot at four levels, or practise against the ball machine. You swing a real paddle in your hand, with spin, aim assist and room-scale play.</p>
+    <div id="feel-offer" hidden>
+      <b>A friend sent you their paddle settings</b>
+      <div id="feel-offer-text"></div>
+      <div class="row"><button id="feel-yes" type="button" class="primary">Use them</button><button id="feel-no" type="button">No thanks</button></div>
+    </div>
     <button id="btn-vr" class="primary" disabled><span class="ico">🥽</span><span><b>Play in VR</b><span class="d">In a sports hall with a crowd</span></span></button>
     <button id="btn-ar" disabled><span class="ico">🏠</span><span><b>Play in your room</b><span class="d">Mixed reality: the table appears in your real room</span></span></button>
     <button id="btn-screen"><span class="ico">🖥️</span><span><b>Play on this screen</b><span class="d">v the robots or the ball machine. Mouse moves the paddle, it swings by itself</span></span></button>
@@ -94,7 +105,7 @@
       <div id="join-note"></div>
     </form>
     <div id="xr-note">Checking for VR…</div>
-    <div class="foot"><span>Clear a space about 2 × 2.5 m</span><span>v0.3</span></div>
+    <div class="foot"><span>Clear a space about 2 × 2.5 m</span><span>v0.4</span></div>
   </div>
 </div>
 <div id="touch-hud" hidden><button id="touch-menu" type="button">Menu</button><button id="touch-serve" type="button" class="primary">Serve</button></div>
