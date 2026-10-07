@@ -44,7 +44,19 @@ times to become a killer, then a single takes one life, a double two, a treble
 three, and your own number costs you one. Up to three robots wait their turn on
 your left. In cricket and Killer every robot dart gets the concentration of a
 finishing double (Rookie would take 60+ visits a cricket leg otherwise). Practice:
-Around the Clock (fewest darts), Count-up (8 visits) and Free throw. In VR the dart sticks out of your throwing hand's controller: hold the
+Around the Clock (fewest darts), Count-up (8 visits) and Free throw.
+**Darts cup** (Darts > Cup): the same eight-player draw as the table tennis cup;
+quarter-finals and semi-finals are one leg of 301, the final best of three, with
+your finish setting. Watch the robot matches (two robots at the oche) or skip them
+(`src/darts/cup.js` plays a skipped match out dart by dart with the robots' real
+throwing). **Darts with a friend** (Darts > Friend): host as below, then "Start
+darts together" plays the game picked on the Match tab. Both screens run the same
+game from the same start (`darts.setup`: who throws first, Killer numbers); the
+friend sends where they let go (`dthrow`), the host throws it for them from beside
+you and sends every dart's flight and outcome (`dart`) so both boards match. Each
+side keeps its own clock, so before a dart from the other side the game skips any
+pause between visits (`catchUp`). In VR the friend appears as a person stepping up
+to throw beside you. In VR the dart sticks out of your throwing hand's controller: hold the
 trigger (or grip), throw, let go. The throw speed is the peak of the last 120 ms
 (so letting go a moment late doesn't kill it); Settings has aim help (pulls a
 near miss towards where the dart was pointing as you aimed; Full also shows an

@@ -6,6 +6,8 @@ import { R, NUMBERS, BOARD, FACE_Z, OCHE_Z, scoreAt, aimPoint, parseLabel, wireD
 import { X01, AroundClock, CountUp, checkoutRoute, robotTarget, THROWS, Cricket, CRICKET_NUMS, cricketTarget, Killer, killerTarget } from '../src/darts/rules.js';
 import { flightOutcome, solveLaunch, posAt, releaseVelocity } from '../src/darts/flight.js';
 import { robotDart, DART_SKILL, DART_AVG, callFor, words, goesForTrebles as trebles } from '../src/darts/robots.js';
+import { simulateMatch, ROUND_LEGS } from '../src/darts/cup.js';
+import { newCup, nextMatch, record, YOU } from '../src/cup.js';
 import { rng32 } from './sim.mjs';
 
 const h = label => { const { n, mult } = parseLabel(label); return { n, mult, score: n * mult, label }; };
@@ -304,6 +306,31 @@ test('robots finish cricket legs and Killer games', () => {
     console.log(`Killer (${name}): ${Math.round(visits / 60)} visits a game, wins`, wins);
     assert.ok(visits / 60 < 25, name);
   }
+});
+
+test('darts cup: skipped robot matches are played out, and the better robot usually wins', () => {
+  const rng = rng32(3);
+  const r = simulateMatch('rookie', 'omega', { legs: 3, rng });
+  assert.ok(['rookie', 'omega'].includes(r.winner));
+  assert.equal(Math.max(r.score[0].a, r.score[0].b), 2);
+  let omega = 0, vortex = 0;
+  for (let i = 0; i < 100; i++) {
+    if (simulateMatch('rookie', 'omega', { rng }).winner === 'omega') omega++;
+    if (simulateMatch('vortex', 'zippy', { doubleOut: true, rng }).winner === 'vortex') vortex++;
+  }
+  console.log(`one leg of 301: omega beats rookie ${omega}/100, vortex beats zippy ${vortex}/100`);
+  assert.ok(omega >= 95, `omega ${omega}`);
+  assert.ok(vortex > 50 && vortex < 95, `vortex ${vortex}`);
+  // A whole cup: the draw from the table tennis cup, every match skipped.
+  const cup = newCup(rng);
+  let nx;
+  while ((nx = nextMatch(cup))) {
+    const a = nx.m.a === YOU ? 'chopper' : nx.m.a, b = nx.m.b === YOU ? 'chopper' : nx.m.b;     // a stand-in for you
+    const q = simulateMatch(a, b, { legs: ROUND_LEGS[nx.r], rng });
+    record(cup, nx.r, nx.i, q.winner === a ? nx.m.a : nx.m.b, q.score);
+  }
+  assert.ok(cup.champion);
+  assert.equal(cup.rounds[2][0].score[0].a + cup.rounds[2][0].score[0].b >= 2, true);
 });
 
 test('the caller', () => {

@@ -295,24 +295,29 @@ export function createDarts(ctx) {
   const someRobot = (all = false) => { const r = robots().filter(p => all || stillIn(p)); return r[Math.floor(Math.random() * r.length)] ?? null; };
 
   // opts: { mode, start, doubleOut, legs, rival (a robot, or null for two people
-  // taking turns); Killer: rivals (robots), players (people, without robots), lives }
+  // taking turns); Killer: rivals (robots), players (people, without robots), lives;
+  // robotsOnly: [two robots] to watch; label: what it's for (a cup round);
+  // remote: a game with a friend on another screen: { names, me (our index),
+  // host (we run it), first, numbers (Killer) } }
   function start(opts) {
     stopAll();
     S.opts = opts;
     S.mode = opts.mode;
-    S.t = 0; S.log = S.log ?? [];
+    S.t = 0; S.log = S.log ?? []; S.dartNo = 0; S.pending = null;
+    const R = opts.remote;
     const person = (name, i) => ({ name, kind: 'you', flight: FLIGHTS[i] });
     const robot = r => ({ name: r.name, kind: 'robot', rival: r, flight: r.look.accent });
-    if (S.mode === 'x01' || S.mode === 'cricket') {
-      S.players = opts.rival ? [person('You', 0), robot(opts.rival)] : [person('Player 1', 0), person('Player 2', 1)];
-      const first = Math.random() < 0.5 ? 0 : 1;
-      S.game = S.mode === 'x01' ? new X01({ start: opts.start, doubleOut: opts.doubleOut, legs: opts.legs, players: 2, firstThrower: first })
-        : new Cricket({ legs: opts.legs, players: 2, firstThrower: first });
-    } else if (S.mode === 'killer') {
+    if (R) S.players = R.names.map((name, i) => (i === R.me ? person('You', i) : { name, kind: 'remote', flight: FLIGHTS[i] }));
+    else if (opts.robotsOnly) S.players = opts.robotsOnly.map(robot);
+    else if (S.mode === 'killer') {
       S.players = opts.rivals?.length ? [person('You', 0), ...opts.rivals.map(robot)]
         : Array.from({ length: opts.players ?? 2 }, (_, i) => person(`Player ${i + 1}`, i));
-      S.game = new Killer({ players: S.players.length, lives: opts.lives ?? 3, firstThrower: Math.floor(Math.random() * S.players.length) });
-    } else {
+    } else if (S.mode === 'x01' || S.mode === 'cricket') S.players = opts.rival ? [person('You', 0), robot(opts.rival)] : [person('Player 1', 0), person('Player 2', 1)];
+    const n = S.players.length, first = R?.first ?? Math.floor(Math.random() * n);
+    if (S.mode === 'x01') S.game = new X01({ start: opts.start, doubleOut: opts.doubleOut, legs: opts.legs, players: n, firstThrower: first });
+    else if (S.mode === 'cricket') S.game = new Cricket({ legs: opts.legs, players: n, firstThrower: first });
+    else if (S.mode === 'killer') S.game = new Killer({ players: n, lives: opts.lives ?? 3, firstThrower: first, numbers: R?.numbers ?? null });
+    else {
       S.players = [person('You', 0)];
       S.game = S.mode === 'atc' ? new AroundClock() : S.mode === 'count' ? new CountUp(8) : null;
     }
@@ -337,12 +342,13 @@ export function createDarts(ctx) {
     S.phase = 'between';
     S.cam = null;
     drawCard();
-    const g = S.game, rp = robotP(), first = S.players[turnIndex()];
-    const firstUp = `${isYou(first) ? 'you throw' : `${first.name} throws`} first`;
+    const g = S.game, rp = robotP(), opener = S.players[turnIndex()];
+    const firstUp = `${isYou(opener) ? 'you throw' : `${opener.name} throws`} first`;
     const legs = n => (n === 1 ? 'one leg' : `best of ${n} legs`);
     if (S.mode === 'x01' || S.mode === 'cricket') {
       const how = S.mode === 'x01' ? `${g.start} · ${legs(g.bestOf)} · ${g.doubleOut ? 'double out' : 'any finish'}` : `Cricket · ${legs(g.bestOf)}`;
-      showBanner(rp ? `You v ${rp.name}` : 'Player 1 v Player 2', `${how} · ${firstUp}`, rp ? hexStr(rp.flight) : C.accent, 3.2);
+      const [a, b] = S.players, title = isYou(b) ? `You v ${a.name}` : `${a.name} v ${b.name}`;
+      showBanner(title, `${opts.label ? `${opts.label} · ` : ''}${how} · ${firstUp}`, rp ? hexStr(rp.flight) : C.accent, 3.2);
     } else if (S.mode === 'killer') {
       const names = S.players.map(p => (isYou(p) ? 'you' : p.name));
       showBanner('Killer', `${cap(names.slice(0, -1).join(', '))} and ${names[names.length - 1]} · ${g.startLives} lives · ${firstUp}`, C.accent, 3.2);
@@ -362,30 +368,76 @@ export function createDarts(ctx) {
       S.phase = 'robot'; S.rob = { dart: 0, step: 'walk', t: 0, next: S.t + 1.1 };
       recolour(robotHandDart, p.flight);
     } else {
-      S.phase = 'aim';
-      recolour(handRig, p.flight); recolour(screenDart, p.flight);
+      // Ours to throw, or (a friend on another screen) theirs: we wait for their dart.
+      S.phase = p.kind === 'remote' ? 'remote' : 'aim';
+      if (p.kind === 'you') { recolour(handRig, p.flight); recolour(screenDart, p.flight); }
       // Whose go it is, when people are sharing; at Killer, what you need.
+      const whose = isYou(p) ? (S.players.filter(q => q.kind === 'you').length > 1 ? `${p.name} to throw` : 'Your turn') : `${p.name} to throw`;
       if (S.mode === 'killer') {
-        const i = g.turn, more = 3 - g.hits[i];
-        showBanner(isYou(p) ? 'Your turn' : `${p.name} to throw`, g.killer[i] ? 'You\'re a killer: hit the others\' numbers' : `Your number is ${g.numbers[i]}: hit it ${more} more time${more === 1 ? '' : 's'}`, hexStr(p.flight), 1.8);
+        // (People sharing this screen are all "you"; a friend elsewhere is "they".)
+        const i = g.turn, more = 3 - g.hits[i], mine = p.kind === 'you', your = mine ? 'Your' : 'Their';
+        showBanner(whose, g.killer[i] ? `${mine ? 'You\'re' : 'They\'re'} a killer: hitting the others' numbers` : `${your} number is ${g.numbers[i]}: ${more} more hit${more === 1 ? '' : 's'} to be a killer`, hexStr(p.flight), 1.8);
       } else if ((S.mode === 'x01' || S.mode === 'cricket') && !robotP()) {
-        showBanner(`${p.name} to throw`, S.mode === 'x01' ? `${g.remaining} to go` : `${g.points[g.turn]} points`, hexStr(p.flight), 1.6);
+        showBanner(whose, S.mode === 'x01' ? `${g.remaining} to go` : `${g.points[g.turn]} points`, hexStr(p.flight), 1.6);
       }
     }
     drawCard();
   }
 
   // ------------------------------------------------------- throwing a dart --
-  function launch(p0, v0) {
+  // A dart leaves a hand. With a friend, the host decides where every dart goes
+  // (`out`) and sends it on; the friend's screen plays the same darts.
+  function launch(p0, v0, given = null) {
     const who = turnIndex();
-    const out = flightOutcome(p0, v0);
+    const out = given ?? flightOutcome(p0, v0);
     const mesh = makeDart(S.players[who].flight);
     pointDart(mesh, p0, v0);
     root.add(mesh);
     S.darts.push({ mesh, p0: { ...p0 }, v0: { ...v0 }, t: 0, out, who, state: 'fly' });
     sfx.play('swish', p0, Math.hypot(v0.x, v0.y, v0.z) / 7);
-    if (S.phase === 'aim') S.phase = 'flying';
+    if (['aim', 'remote', 'waiting'].includes(S.phase)) S.phase = 'flying';
+    if (S.opts.remote?.host) ctx.sendDart?.({ n: S.dartNo, p0: { x: p0.x, y: p0.y, z: p0.z }, v0: { x: v0.x, y: v0.y, z: v0.z }, out });
+    S.dartNo++;
+    if (S.players[who].kind === 'remote') S.players[who].threwAt = S.t;
     return out;
+  }
+
+  // Playing a friend: the two screens keep their own clocks, so before a dart
+  // from the other side, finish anything still in the air and skip the pauses
+  // between visits until we're waiting for that dart too.
+  function catchUp() {
+    for (const d of S.darts) if (d.state === 'fly') land(d);
+    for (let guard = 0; !['aim', 'remote', 'waiting'].includes(S.phase) && S.timers.length && guard < 50; guard++) {
+      S.timers.sort((a, b) => a.t - b.t);
+      const tm = S.timers.shift();
+      S.t = Math.max(S.t, tm.t);
+      tm.fn();
+    }
+  }
+  // Host: the friend's dart, as the board point they let go at. They throw from
+  // beside you (where the robots throw).
+  function remoteThrow(m) {
+    catchUp();
+    if (player()?.kind !== 'remote' || S.phase !== 'remote' || m.n !== S.dartNo) return false;
+    if (![m.bx, m.by].every(v => Number.isFinite(v) && Math.abs(v) < 1.5)) return false;
+    const p0 = new THREE.Vector3(THROW_SPOT.x + 0.2, 1.7, THROW_SPOT.z - 0.26);
+    const tgt = { x: BOARD.x + m.bx, y: BOARD.y + m.by, z: FACE_Z };
+    launch(p0, solveLaunch(p0, tgt, Math.hypot(tgt.x - p0.x, tgt.z - p0.z) / 6.2));
+    return true;
+  }
+  // Friend's screen: a dart from the host. Our own darts fly from our own hand.
+  function remoteDart(m) {
+    catchUp();
+    if (m.n !== S.dartNo || !m.out || !m.p0 || !m.v0) return false;
+    let { p0, v0, out } = m;
+    const from = S.pending?.p0;
+    if (humanTurn() && from && ['board', 'cabinet', 'wall'].includes(out.kind)) {
+      const T = Math.hypot(out.at.x - from.x, out.at.z - from.z) / 6.2;
+      p0 = from; v0 = solveLaunch(from, out.at, T); out = { ...out, t: T };
+    }
+    S.pending = null;
+    launch(p0, v0, out);
+    return true;
   }
 
   function land(d) {
@@ -434,7 +486,7 @@ export function createDarts(ctx) {
     drawCard();
     if (visitOver) return endVisit(result);
     if (p.kind === 'robot') S.rob.next = S.t + 0.75;
-    else S.phase = 'aim';
+    else S.phase = p.kind === 'remote' ? 'remote' : 'aim';
   }
 
   function endVisit(r) {
@@ -445,7 +497,7 @@ export function createDarts(ctx) {
     if (S.mode === 'x01') {
       const g = S.game, total = r.total, rp = robotP();
       const robot = p.kind === 'robot';
-      if (!robot && rp) {
+      if (p.kind === 'you' && rp) {
         stats.darts.high = Math.max(stats.darts.high ?? 0, total);
         if (total === 180) stats.darts.n180 = (stats.darts.n180 ?? 0) + 1;
         if (r.checkout) stats.darts.bestOut = Math.max(stats.darts.bestOut ?? 0, total);
@@ -453,7 +505,7 @@ export function createDarts(ctx) {
       }
       if (r.checkout) gameShot(r); else ctx.call(callFor(total, r.bust));
       const col = hexStr(p.flight);
-      if (r.checkout) return legOver(p, `${isYou(p) ? 'You take' : `${p.name} takes`} the leg with ${total}`, robot ? 'legWin' : 'pLegWin');
+      if (r.checkout) return legOver(p, `${isYou(p) ? 'You take' : `${p.name} takes`} the leg with ${total}`, 'legWin', 'pLegWin');
       if (r.bust) showBanner('Bust!', `${darts} · ${p.name === 'You' ? 'back to' : `${p.name} stays on`} ${g.scores[who]}`, C.bad, 2);
       else if (total === 180) {
         showBanner('ONE HUNDRED AND EIGHTY!', p.name === 'You' ? 'Three in the treble twenty!' : `${p.name}: maximum!`, '#d4af37', 3.2);
@@ -463,30 +515,21 @@ export function createDarts(ctx) {
         showBanner(p.name === 'You' ? what : `${p.name}: ${what}`, `${darts} · ${g.scores[who]} left`, total >= 100 ? '#d4af37' : col, 1.9);
         if (total >= 100) { sfx.play('cheer', null, 0.5); ctx.cheer(0.8); }
       }
-      if (rp) {
-        const mood = robot ? (r.bust ? 'bust' : total === 180 ? 'max' : total >= 100 ? 'big' : total < 20 ? 'low' : null)
-          : (r.bust ? 'pBust' : total === 180 ? 'pMax' : total >= 100 ? 'pBig' : total < 20 ? 'pLow' : null);
-        if (mood) later(1.3, () => talk(mood, mood === 'max' || mood === 'pMax', rp));
-        if (robot) rp.model.celebrate(r.bust || total < 20 ? 'droop' : total === 180 ? 'dance' : total >= 100 ? 'pump' : null);
-        else if (total >= 100) rp.model.celebrate('droop');
-      }
+      react(p, r.bust ? 'bust' : total === 180 ? 'max' : total >= 100 ? 'big' : total < 20 ? 'low' : null, total === 180,
+        r.bust || total < 20 ? 'droop' : total === 180 ? 'dance' : total >= 100 ? 'pump' : null, total >= 100 ? 'droop' : null);
       later(r.bust ? 2.4 : total === 180 ? 3.6 : 2.2, () => { S.game.next(); beginVisit(); });
     } else if (S.mode === 'cricket') {
-      const g = S.game, v = g.visit, marks = v.marks, rp = robotP(), robot = p.kind === 'robot';
+      const g = S.game, v = g.visit, marks = v.marks, rp = robotP();
       const horse = g.whiteHorse;
-      if (!robot && rp) { stats.darts.bestMarks = Math.max(stats.darts.bestMarks ?? 0, marks); save('sh_stats', stats); }
-      if (r.legWon) { gameShot(r); return legOver(p, `${isYou(p) ? 'You close' : `${p.name} closes`} the board`, robot ? 'cLegWin' : 'pcLegWin'); }
+      if (p.kind === 'you' && rp) { stats.darts.bestMarks = Math.max(stats.darts.bestMarks ?? 0, marks); save('sh_stats', stats); }
+      if (r.legWon) { gameShot(r); return legOver(p, `${isYou(p) ? 'You close' : `${p.name} closes`} the board`, 'cLegWin', 'pcLegWin'); }
       const what = marks ? `${marks} mark${marks > 1 ? 's' : ''}` : 'No marks';
       ctx.call(horse ? 'White horse!' : marks ? `${cap(words(marks))} mark${marks > 1 ? 's' : ''}${marks >= 6 ? '!' : ''}` : 'No score');
       showBanner(horse ? 'White horse!' : isYou(p) ? what : `${p.name}: ${what}`, `${darts}${v.points ? ` · ${v.points} points` : ''}`, marks >= 6 ? '#d4af37' : hexStr(p.flight), 1.9);
       if (marks === 9) { sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer(2); ctx.confetti({ x: 0, y: 1.9, z: BOARD.z + 0.6 }); }
       else if (marks >= 6) { sfx.play('cheer', null, 0.5); ctx.cheer(0.8); }
-      if (rp) {
-        const mood = robot ? (marks >= 5 ? 'cBig' : marks === 0 ? 'low' : null) : (marks >= 5 ? 'pcBig' : marks === 0 ? 'pLow' : null);
-        if (mood) later(1.3, () => talk(mood, false, rp));
-        if (robot) rp.model.celebrate(marks >= 7 ? 'dance' : marks >= 5 ? 'pump' : marks === 0 ? 'droop' : null);
-        else if (marks >= 6) rp.model.celebrate('droop');
-      }
+      react(p, marks >= 5 ? 'cBig' : marks === 0 ? 'low' : null, false,
+        marks >= 7 ? 'dance' : marks >= 5 ? 'pump' : marks === 0 ? 'droop' : null, marks >= 6 ? 'droop' : null);
       later(marks === 9 ? 3.4 : 2.1, () => { S.game.next(); beginVisit(); });
     } else if (S.mode === 'killer') {
       // Each dart's news has had its banner already.
@@ -509,12 +552,27 @@ export function createDarts(ctx) {
     drawCard();
   }
 
+  // The robots react to a visit: a robot about its own throw (mood, and
+  // `cheer` as it celebrates), otherwise its opponent about yours (the "p"
+  // version of the mood). The opponent sulks (`sulk`) at a big one.
+  const P_MOOD = { bust: 'pBust', max: 'pMax', big: 'pBig', low: 'pLow', cBig: 'pcBig' };
+  function react(p, mood, force, cheer, sulk) {
+    const other = S.players.find(q => q !== p && q.kind === 'robot');
+    if (p.kind === 'robot') {
+      if (mood) later(1.3, () => talk(mood, force, p));
+      if (cheer) p.model.celebrate(cheer);
+    } else if (other && P_MOOD[mood]) later(1.3, () => talk(P_MOOD[mood], force, other));
+    if (other && sulk) other.model.celebrate(sulk);
+  }
+
   // A leg won (x01 or cricket): on to the next, or the end of the match.
-  function legOver(p, line, moment) {
-    const g = S.game, rp = robotP();
+  function legOver(p, line, moment, pMoment) {
+    const g = S.game, other = S.players.find(q => q !== p && q.kind === 'robot');
     if (!g.over) showBanner('Game shot!', `${line} · legs ${g.legsWon.join('–')}`, hexStr(p.flight), 3);
     sfx.play('cheer', null, 0.8); ctx.cheer(1.2);
-    if (rp) { talk(moment, true, rp); rp.model.celebrate(p === rp ? 'spin' : 'droop'); }
+    if (p.kind === 'robot') { talk(moment, true, p); p.model.celebrate('spin'); }
+    else if (other) talk(pMoment, true, other);
+    other?.model.celebrate('droop');
     later(3.4, () => {
       if (S.game.over) return finishMatch();
       S.game.next();
@@ -530,7 +588,18 @@ export function createDarts(ctx) {
     S.phase = 'done';
     const legs = `${g.legsWon[0]}–${g.legsWon[1]}`;
     const avg = cricket ? `marks per round ${g.mpr(0).toFixed(1)}` : `average ${g.average(0).toFixed(1)}`;
-    if (rp) {
+    const lose = S.players.find(q => q !== win);
+    // (A cup match: what the result means, shown after the usual banner.)
+    const note = ctx.onResult?.({ winner: g.winner, legsWon: [...g.legsWon] });
+    if (note) later(2.8, () => showBanner(note.title, note.sub, note.colour, 3.4));
+    if (robots().length === 2) {
+      // Two robots (a cup match you watched).
+      showBanner(`${win.name} wins!`, `Legs ${g.legsWon[g.winner]}–${g.legsWon[1 - g.winner]}`, hexStr(win.flight), 5);
+      win.model.celebrate('dance'); lose.model.celebrate('slump');
+      later(1.0, () => talk('win', true, win));
+      later(3.6, () => talk('pWin', true, lose));
+      sfx.play('fanfare'); ctx.cheer(2);
+    } else if (rp) {
       const you = win.kind === 'you', D = stats.darts;
       const key = cricket ? (you ? 'cWins' : 'cLosses') : (you ? 'wins' : 'losses');
       D[key] = (D[key] ?? 0) + 1;
@@ -542,8 +611,9 @@ export function createDarts(ctx) {
       if (you) { sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer(2); ctx.confetti({ x: 0, y: 1.9, z: BOARD.z + 0.6 }); } else sfx.play('groan');
       ctx.lastResult?.(`${you ? 'You beat' : 'You lost to'} ${rp.name} at ${cricket ? 'cricket' : 'darts'}: legs ${legs}`, you);
     } else {
-      showBanner(`${win.name} wins!`, `Legs ${legs}`, hexStr(win.flight), 5);
-      sfx.play('fanfare'); ctx.cheer(2);
+      showBanner(isYou(win) ? 'You win!' : `${win.name} wins!`, `Legs ${g.legsWon[g.winner]}–${g.legsWon[1 - g.winner]}`, hexStr(win.flight), 5);
+      sfx.play(win.kind === 'remote' ? 'groan' : 'fanfare'); ctx.cheer(2);
+      if (win.kind !== 'remote') ctx.confetti({ x: 0, y: 1.9, z: BOARD.z + 0.6 });
     }
     drawCard();
     later(6, () => ctx.onOver?.('darts'));
@@ -610,7 +680,7 @@ export function createDarts(ctx) {
       }
       ctx.lastResult?.(you ? `You beat ${list} at Killer` : `${win.name} won Killer: you came ${ordinal(place)} of ${g.n}`, you);
     } else {
-      showBanner(`${win.name} wins!`, 'Last one standing', hexStr(win.flight), 5);
+      showBanner(isYou(win) ? 'You win!' : `${win.name} wins!`, 'Last one standing', hexStr(win.flight), 5);
       sfx.play('fanfare'); ctx.cheer(2); ctx.confetti({ x: 0, y: 1.9, z: BOARD.z + 0.6 });
     }
     drawCard();
@@ -654,6 +724,15 @@ export function createDarts(ctx) {
     let holding = false;
     for (const rp of robots()) holding = robotPose(rp, dt) || holding;
     robotHandDart.visible = holding;
+    // A friend on another screen steps up beside you too (main.js draws them).
+    for (const p of S.players) {
+      if (p.kind !== 'remote') continue;
+      const up = player() === p && ['remote', 'flying', 'between'].includes(S.phase);
+      const spot = up ? THROW_SPOT : WAIT_SPOTS[0], k = Math.min(1, dt * 2.6);
+      p.pos ??= { ...WAIT_SPOTS[0] };
+      p.pos.x += (spot.x - p.pos.x) * k; p.pos.z += (spot.z - p.pos.z) * k;
+      p.up = up;
+    }
   }
   // Where a robot aims its next dart. Every dart at cricket and Killer is aimed
   // at one bed, so it gets the concentration of a finishing double.
@@ -814,6 +893,13 @@ export function createDarts(ctx) {
     const p0 = screenDart.visible ? screenDart.position.clone() : new THREE.Vector3(0.12, 1.55, OCHE_Z + 0.1);
     const tgt = { x: BOARD.x + b.x, y: BOARD.y + b.y, z: FACE_Z };
     screenDart.visible = false;
+    // On a friend's game: send it to them, and throw it when it comes back.
+    if (S.opts.remote && !S.opts.remote.host) {
+      S.pending = { p0 };
+      S.phase = 'waiting';
+      ctx.sendThrow?.({ n: S.dartNo, bx: +b.x.toFixed(4), by: +b.y.toFixed(4) });
+      return;
+    }
     launch(p0, solveLaunch(p0, tgt, Math.hypot(tgt.x - p0.x, tgt.z - p0.z) / 6.2));
   }
 
@@ -1119,6 +1205,12 @@ export function createDarts(ctx) {
     snapCamera() { S.cam = null; screenCamera(-1, false); },
     inProgress: () => root.visible && S.phase !== 'done' && S.phase !== 'idle',
     redraw: drawCard,
+    // Playing a friend: their dart arriving (host), a dart from the host (friend's screen).
+    remoteThrow, remoteDart,
+    // How the game was set up, for the friend's screen to start the same game.
+    get setup() { const g = S.game; return { first: g.legStarter ?? g.turn, numbers: g.numbers ?? null }; },
+    // The friend, for drawing them: where they stand, whether they're up, how long since they threw.
+    get friend() { const p = S.players.find(q => q.kind === 'remote'); return p?.pos ? { pos: p.pos, up: p.up, since: S.t - (p.threwAt ?? -9) } : null; },
     // For tests: throw your next dart at a board point (board coordinates).
     testThrow(x, y) { if (S.phase !== 'aim' || !humanTurn()) return false; throwAt({ x, y }); return true; },
     // For tests: a VR-style throw from p0 with velocity v (world), with an optional sight point.
