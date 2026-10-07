@@ -25,7 +25,7 @@ import { LESSONS, LESSON_BALLS, lessonById, judgeHit, judgeShot, judgeServe, sta
 import { createGolf } from './golf/game.js';
 import { COURSES as GOLF_COURSES, coursePar } from './golf/course.js';
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -60,6 +60,7 @@ function load(key, def) { try { return { ...def, ...JSON.parse(localStorage.getI
 function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 const ASSIST = { off: 0, light: 0.55, full: 1 };
 const HOST_NAME = 'Player 1';
+const NET_TIMEOUT = 20000;   // ms of silence before we decide the other player has gone
 
 // ------------------------------------------------------------- renderer --
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -156,7 +157,7 @@ function runTimers() {
 // Sounds also go to a connected friend.
 function sound(kind, p = null, s = 1) {
   sfx.play(kind, p, s);
-  if (G.role === 'host' && G.mode === 'versus') send({ t: 'sfx', k: kind, p: p && [p.x, p.y, p.z], s });
+  if (G.role === 'host' && (G.mode === 'versus' || G.golfFriend)) send({ t: 'sfx', k: kind, p: p && [p.x, p.y, p.z], s });
 }
 function send(msg) { G.net?.link?.send(msg); }
 
@@ -229,13 +230,21 @@ const confetti = createConfetti(scene);
 const ghost = createGhost(scene, makePaddle);
 // Mini golf, the hall's second sport.
 golf = createGolf({
-  scene, camera, raycaster, sfx, settings, stats, save,
+  scene, camera, raycaster, settings, stats, save,
+  sfx: { play: (k, p, s) => sound(k, p, s) },      // heard on a friend's screen too
   showBanner: (...a) => showBanner(...a), setView: v => setView(v),
   isXR: () => G.inXR, viewerXZ: () => viewerSpot(),
   haptic: (i, ms) => haptic(paddleCtrl(), i, ms),
   cheer: a => W.crowd.cheer(a),
   confetti: p => confetti.burst(p, 220, 0.9),
-  roundOver: () => { G.mode = 'menu'; openMenu('golf'); },
+  // Playing with a friend: tell them what happened (they word it for themselves),
+  // and send their putts to the host.
+  onAnnounce: ev => { if (G.role === 'host' && G.golfFriend) send({ t: 'gev', ev }); },
+  remotePutt: (dx, dz, speed) => G.net?.link?.send({ t: 'gputt', dx, dz, speed }),
+  roundOver: () => {
+    if (G.golfFriend) { send({ t: 'gend' }); G.golfFriend = false; }
+    G.mode = 'menu'; openMenu(G.role === 'host' ? 'friend' : 'golf');
+  },
 });
 const bubble = createBubble(scene);
 const trophy = buildTrophy();
@@ -405,7 +414,7 @@ function renderMenu(ui) {
     ? (stats.golfBests[gc.id] ? `${gc.name} best: ${stats.golfBests[gc.id]} (par ${coursePar(gc.holes)})` : '')
     : [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
   if (honours) ui.text(honours, w - 60, 140, { size: 30, weight: 800, color: '#d4af37', align: 'right' });
-  const tabs = golfing ? [['golf', 'Play'], ['settings', 'Settings']]
+  const tabs = golfing ? [['golf', 'Play'], ['friend', 'Friend'], ['settings', 'Settings']]
     : [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
   const tw = (w - 120 - (tabs.length - 1) * 14) / tabs.length;
   const parentTab = { watch: 'match', feel: 'settings', share: 'settings', lessons: 'practice' }[G.tab] ?? G.tab;
@@ -524,10 +533,12 @@ function renderMenu(ui) {
       ui.text(n.code.split('').join(' '), w / 2, 530, { size: 130, weight: 900, color: '#ffd23f', align: 'center' });
       const st = n.friend ? `${n.friend.name} is here!` : 'Waiting for your friend to join…';
       ui.text(st, w / 2, 660, { size: 40, weight: 800, color: n.friend ? C.good : C.text, align: 'center' });
-      ui.text(`Match length: ${settings.games === 1 ? '1 game' : `best of ${settings.games}`} (set on the Match tab)`, w / 2, 715, { size: 28, weight: 500, color: C.dim, align: 'center' });
-      const inVersus = G.mode === 'versus' && G.match && !G.match.over;
+      const golfing = G.sport === 'golf';
+      const gcName = (GOLF_COURSES[settings.golfCourse] ?? GOLF_COURSES.classic).name;
+      ui.text(golfing ? `Mini golf: the ${gcName} course, taking turns (set on the Play tab)` : `Match length: ${settings.games === 1 ? '1 game' : `best of ${settings.games}`} (set on the Match tab)`, w / 2, 715, { size: 28, weight: 500, color: C.dim, align: 'center' });
+      const inVersus = (G.mode === 'versus' && G.match && !G.match.over) || (G.mode === 'golf' && G.golfFriend && golf.inProgress());
       if (inVersus) ui.button('resume', L, 760, width / 2 - 10, 110, 'Resume', { primary: true, size: 46 });
-      else ui.button('versus', L, 760, width / 2 - 10, 110, 'Start match', { primary: !!n.friend, disabled: !n.friend, size: 44 });
+      else ui.button(golfing ? 'golfversus' : 'versus', L, 760, width / 2 - 10, 110, golfing ? 'Start a round together' : 'Start match', { primary: !!n.friend, disabled: !n.friend, size: golfing ? 38 : 44 });
       ui.button('unhost', L + width / 2 + 10, 760, width / 2 - 10, 110, 'Stop hosting', { size: 40 });
     }
   } else if (G.tab === 'settings') {
@@ -738,6 +749,7 @@ function onMenuClick(id) {
     }
   }
   else if (id === 'golf:start') startGolf();
+  else if (id === 'golfversus') startGolfVersus();
   else if (k === 'golfPlayers') settings.golfPlayers = +v;
   else if (k === 'golfCourse') settings.golfCourse = v;
   else if (k === 'cup') {
@@ -783,7 +795,7 @@ function onMenuClick(id) {
 
 function openMenu(tab) {
   if (tab) G.tab = tab;
-  else if (G.sport === 'golf' && !['golf', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
+  else if (G.sport === 'golf' && !['golf', 'friend', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
   else if (G.sport === 'tt' && G.tab === 'golf') G.tab = 'match';
   G.paused = true;
   menu.mesh.visible = true;
@@ -809,20 +821,33 @@ function clearPlay() {
   robot2.root.visible = false; desk.outer.visible = true;
   friendAvatar.root.visible = false; friendDesk.outer.visible = false;
   // Back from mini golf: the table and its scoreboard return.
+  if (G.golfFriend) { send({ t: 'gend' }); G.golfFriend = false; }
   if (golf?.active) { golf.stop(); attachHands(); }
   W.table.visible = true; scoreboard.mesh.visible = true;
   setView(null);
 }
 
-function startGolf(players = settings.golfPlayers) {
+// players: a number (sharing this screen) or a list of names; me: our index.
+function startGolf(players = settings.golfPlayers, me = null) {
   clearPlay();
   G.mode = 'golf';
   W.table.visible = false; W.robot.root.visible = false; scoreboard.mesh.visible = false;
   desk.outer.visible = false;
   closeMenu();
-  golf.start(players, settings.golfCourse);
+  golf.start(players, settings.golfCourse, me);
   attachHands();
   if (!G.inXR) golf.snapCamera();
+}
+
+// Mini golf with the friend you're hosting: you're player 1, they're player 2.
+function startGolfVersus() {
+  if (!G.net?.friend) return;
+  const names = [HOST_NAME, G.net.friend.name];
+  startGolf(names, 0);                 // (ends any earlier round first)
+  G.golfFriend = true;
+  send({ t: 'gstart', course: settings.golfCourse, names });
+  send({ t: 'g', s: golf.snapshot() });
+  send({ t: 'gev', ev: { k: 'hole', hole: 0, p: 0 } });
 }
 
 // Where you are: null = behind your end of the table; COURTSIDE = a seat by
@@ -1450,7 +1475,7 @@ function friendLeft(reason) {
   const name = G.net.friend.name;
   G.net.friend = null;
   G.role = 'solo';
-  if (G.mode === 'versus') { clearPlay(); G.mode = 'menu'; openMenu('friend'); }
+  if (G.mode === 'versus' || G.golfFriend) { G.golfFriend = false; clearPlay(); G.mode = 'menu'; openMenu('friend'); }
   showBanner(`${name} left`, reason, C.bad, 3);
   if (menu.mesh.visible) menu.redraw();
 }
@@ -1472,6 +1497,9 @@ function onGuestData(m) {
     if (Number.isFinite(m.x) && Number.isFinite(m.y)) friendDesk.aim(m.x, m.y);
   } else if (m.t === 'toss') {
     toss(O);
+  } else if (m.t === 'gputt') {
+    // The friend's putt on their turn (they're player 2).
+    if (G.golfFriend && [m.dx, m.dz, m.speed].every(Number.isFinite)) golf.remotePutt(1, m.dx, m.dz, m.speed);
   }
 }
 
@@ -1501,10 +1529,28 @@ function sendScore() { if (G.role === 'host') send({ t: 'score', m: matchSnapsho
 // Stream the state to the guest every other frame.
 let sendTick = 0;
 const _p = new V3(), _q = new THREE.Quaternion();
+// Mini golf with a friend: the round's state, plus (in VR) where your head and
+// putter are, so they can see you on the course.
+function streamGolf() {
+  const msg = { t: 'g', s: golf.snapshot(), paused: G.paused };
+  if (G.inXR && golf.putterRig.parent) {
+    const r = v => Math.round(v * 1000) / 1000;
+    const cam = renderer.xr.getCamera();
+    cam.getWorldPosition(_p); cam.getWorldQuaternion(_q);
+    msg.hh = [_p.x, _p.y, _p.z, _q.x, _q.y, _q.z, _q.w].map(r);
+    golf.putterRig.getWorldPosition(_p); golf.putterRig.getWorldQuaternion(_q);
+    msg.gp = [_p.x, _p.y, _p.z, _q.x, _q.y, _q.z, _q.w].map(r);
+  }
+  send(msg);
+}
+
 function streamState() {
   if (G.role !== 'host') return;
-  if (G.net?.friend && performance.now() - (G.net.heard ?? performance.now()) > 6000) return friendLeft('Lost the connection');
+  // 20 s of silence: they've gone (closing the page says goodbye straight away;
+  // this is for a dropped connection, and allows for a browser slowing a background tab).
+  if (G.net?.friend && performance.now() - (G.net.heard ?? performance.now()) > NET_TIMEOUT) return friendLeft('Lost the connection');
   if (!G.net?.link?.connected || ++sendTick % 2) return;
+  if (G.golfFriend) return streamGolf();
   const b = G.ball;
   const cam = G.inXR ? renderer.xr.getCamera() : null;
   let head;
@@ -1562,11 +1608,41 @@ function onHostData(m) {
     case 'hello': gs.hostName = m.hostName || HOST_NAME; drawScoreboard(); break;
     case 'full': showBanner('That game is full', 'Ask your friend for a new code', C.bad, 10); break;
     case 'bye': gs.ended = true; showBanner('The host stopped the game', 'Reload the page to join again', C.bad, 30); break;
+    // Mini golf with the host: we're player 2 and only send our putts.
+    case 'gstart': guestGolf(true, m); break;
+    case 'g': if (G.mode !== 'golf') guestGolf(true, { course: m.s.course, names: gs.golfNames ?? [gs.hostName, gs.name] }); golf.applyRemote(m.s); gs.golf = m; break;
+    case 'gev': if (G.mode === 'golf') golf.remoteAnnounce(m.ev); break;
+    case 'gend': guestGolf(false); showBanner('Round over', 'Waiting for the host', C.accent2, 4); break;
     case 's': gs.state = m; gs.recvT = performance.now(); G.mode = m.mode; break;
     case 'score': G.match = m.m; G.mode = m.mode; drawScoreboard(); break;
     case 'sfx': sfx.play(m.k, m.p && { x: m.p[0], y: m.p[1], z: m.p[2] }, m.s); break;
     case 'confetti': confetti.burst({ x: -0.9, y: 1.0, z: -0.4 }, 160, m.power); confetti.burst({ x: 0.9, y: 1.0, z: -0.4 }, 160, m.power); break;
     case 'msg': guestMessage(m); break;
+  }
+}
+
+// The guest switching into (or out of) the host's mini golf round.
+let remotePutter = null;
+function guestGolf(on, m = {}) {
+  const gs = G.guest;
+  if (on) {
+    gs.golfNames = m.names;
+    G.mode = 'golf';
+    W.table.visible = false; scoreboard.mesh.visible = false; banner.mesh.visible = true;
+    friendDesk.outer.visible = false; hostPaddle.group.visible = false; W.setBall(null);
+    if (!remotePutter) { remotePutter = golf.makePutter(); scene.add(remotePutter.group); }
+    golf.startRemote(m.course, m.names, 1);
+    document.querySelector('#guest-hud .keys').textContent = isTouch() ? 'Drag back from the ball and let go' : 'Drag back from the ball with the mouse and let go';
+    // The boards face the usual way in golf.
+    banner.mesh.position.set(0, 2.05, -1.75); banner.mesh.rotation.set(0, 0, 0);
+  } else {
+    golf.stop();
+    G.mode = 'menu';
+    W.table.visible = true; scoreboard.mesh.visible = true;
+    friendDesk.outer.visible = true; hostPaddle.group.visible = true; hostAvatar.root.visible = true;
+    if (remotePutter) remotePutter.group.visible = false;
+    document.querySelector('#guest-hud .keys').textContent = isTouch() ? 'Drag to move your paddle · tap Serve when it\'s your serve' : 'Mouse = paddle · Space = toss when serving';
+    placeBoards(); resetDeskCamera();
   }
 }
 
@@ -1576,7 +1652,9 @@ function guestMessage(m) {
   const you = m.winner === O;
   const reason = r => (m.loser === O ? r : `${host}: ${r.charAt(0).toLowerCase()}${r.slice(1)}`);
   switch (m.k) {
-    case 'start': showBanner(`You v ${host}`, m.first === O ? 'You serve first' : `${host} serves first`, C.accent, 2.4); break;
+    case 'start':
+      if (G.mode === 'golf') guestGolf(false);    // the host has switched back to table tennis
+      showBanner(`You v ${host}`, m.first === O ? 'You serve first' : `${host} serves first`, C.accent, 2.4); break;
     case 'serve': showBanner(m.who === O ? (m.gp === O ? 'Game point' : 'Your serve') : `${host} to serve`, m.who === O ? tossHint() : '', C.accent2, 2.5); break;
     case 'let': showBanner('Let', 'It touched the net, serve again', C.accent2, 1.6); break;
     case 'point': showBanner(you ? 'Your point' : `${host}'s point`, reason(m.reason), you ? C.good : C.bad, 1.9); if (you) W.crowd.cheer(0.5); break;
@@ -1588,6 +1666,26 @@ function guestMessage(m) {
 const guestPlane = new THREE.Plane(new V3(0, 0, 1), DESK_Z);   // z = -DESK_Z
 function guestFrame(dt) {
   const gs = G.guest, st = gs.state;
+  if (G.mode === 'golf') {
+    // Mini golf: draw the host's round; our putts go to the host.
+    golf.update(dt, { xr: false, paused: false });
+    const gm = gs.golf;
+    hostAvatar.root.visible = !!gm?.hh;
+    if (remotePutter) remotePutter.group.visible = !!gm?.gp;
+    if (gm?.hh) {
+      const [hx, hy, hz, qx, qy, qz, qw] = gm.hh;
+      remotePutter.group.position.set(gm.gp[0], gm.gp[1], gm.gp[2]);
+      remotePutter.group.quaternion.set(gm.gp[3], gm.gp[4], gm.gp[5], gm.gp[6]);
+      hostAvatar.set({ x: hx, y: hy, z: hz }, new THREE.Quaternion(qx, qy, qz, qw).multiply(FLIP), { x: gm.gp[0], y: gm.gp[1], z: gm.gp[2] });
+    }
+    const now = performance.now();
+    // Golf sends nothing between putts, so keep the host sure we're still here.
+    if (now - (gs.lastSend ?? 0) > 1000) { gs.lastSend = now; G.net.link.send({ t: 'hb' }); }
+    if (!gs.ended && now - (gs.heard ?? now) > NET_TIMEOUT) { gs.ended = true; showBanner('Lost the host', 'Reload the page to join again', C.bad, 30); }
+    const S = golf.state, mine = S.turn === 1;
+    document.getElementById('guest-status').textContent = gs.ended ? 'Disconnected' : gm?.paused ? `${gs.hostName} paused the game` : mine ? 'Your turn: drag back from the ball and let go' : `${gs.hostName} is putting`;
+    return;
+  }
   // Your paddle follows your mouse straight away; the host does the hitting.
   raycaster.setFromCamera(desk.mouse, camera);
   const p = new V3();
@@ -1614,7 +1712,7 @@ function guestFrame(dt) {
     hostAvatar.set({ x: hx, y: hy, z: hz }, new THREE.Quaternion(qx, qy, qz, qw).multiply(FLIP), { x: st.hp[0], y: st.hp[1], z: st.hp[2] });
   }
   // The host streams constantly, so 6 s of silence means they've gone.
-  if (!gs.ended && now - (gs.heard ?? now) > 6000) { gs.ended = true; showBanner('Lost the host', 'Reload the page to join again', C.bad, 30); }
+  if (!gs.ended && now - (gs.heard ?? now) > NET_TIMEOUT) { gs.ended = true; showBanner('Lost the host', 'Reload the page to join again', C.bad, 30); }
   document.getElementById('guest-status').textContent = gs.ended ? 'Disconnected' : st?.paused && G.mode !== 'menu' ? `${gs.hostName} paused the game` : `Playing ${gs.hostName}`;
 }
 

@@ -307,12 +307,72 @@ export function createGolf(ctx) {
     card.mesh.rotation.set(0, 0.45, 0);
   }
 
-  function start(nPlayers = 1, courseId = 'classic') {
+  // players: a number (pass the controls round) or a list of names. me: which
+  // player is on this screen (null when everyone shares it).
+  function start(players = 1, courseId = 'classic', me = null) {
     useCourse(courseId);
-    S.players = Array.from({ length: nPlayers }, (_, i) => ({ name: nPlayers === 1 ? 'You' : `Player ${i + 1}`, scores: [] }));
+    const names = Array.isArray(players) ? players
+      : Array.from({ length: players }, (_, i) => (players === 1 ? 'You' : `Player ${i + 1}`));
+    S.players = names.map(name => ({ name, scores: [] }));
+    S.me = names.length === 1 ? 0 : me;
+    S.remote = false;
     S.hole = 0; S.timers = [];
     root.visible = true;
     startHole();
+  }
+
+  // Is it the turn of the player on this screen?
+  const myTurn = () => S.me == null || S.turn === S.me;
+  const nameOf = i => (S.me === i ? 'You' : S.players[i]?.name ?? 'Player');
+  const possOf = i => (S.me === i ? 'Your' : `${S.players[i]?.name ?? 'Player'}'s`);
+
+  // Every announcement goes through here, so a friend's screen can show the
+  // same moment worded for them (see remoteAnnounce).
+  function announce(ev) {
+    if (!S.remote) ctx.onAnnounce?.(ev);
+    const h = holes[ev.hole ?? S.hole];
+    const solo = S.players.length === 1;
+    switch (ev.k) {
+      case 'hole':
+        showBanner(`Hole ${ev.hole + 1}: ${h.name}`, `Par ${h.par}${solo ? '' : ` · ${possOf(ev.p)} turn`}`, '#2fb8ff', 3);
+        break;
+      case 'turn': {
+        const how = S.me == null ? 'Pass the controls over' : S.me === ev.p ? (ctx.isXR() ? 'Swing when you\'re ready' : 'Drag back from the ball and let go') : `${S.players[ev.p].name} is putting`;
+        showBanner(`${possOf(ev.p)} turn`, how, '#2fb8ff', 2.5);
+        break;
+      }
+      case 'hazard':
+        showBanner(ev.kind === 'water' ? 'Splash!' : 'Down the pit!', 'One stroke penalty: play again from where it was hit', '#ff9a5a', 2.2);
+        break;
+      case 'sunk': {
+        const diff = ev.score - h.par;
+        if (ev.score === 1) {
+          showBanner('HOLE IN ONE!', `${nameOf(ev.p)} aced ${h.name}`, '#d4af37', 3.5);
+          sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2); ctx.confetti?.({ x: h.cup[0], y: 0.3, z: h.cup[1] });
+        } else {
+          const who = solo ? '' : `${nameOf(ev.p)}: `;
+          showBanner(SCORE_NAMES[diff] ?? `${diff > 0 ? '+' : ''}${diff}`, `${who}${ev.score} stroke${ev.score > 1 ? 's' : ''} · par ${h.par}`, diff < 0 ? '#58d68d' : diff === 0 ? '#2fb8ff' : '#ff9a5a', 2.6);
+          if (diff < 0) { sfx.play('cheer', null, 0.7); ctx.cheer?.(1); }
+        }
+        break;
+      }
+      case 'pickup':
+        showBanner('Picked up', `${MAX_STROKES} strokes is the limit: ${ev.score} on this hole`, '#ff5a5a', 2.6);
+        break;
+      case 'round': {
+        const totals = ev.totals, par = coursePar(holes);
+        if (solo) {
+          showBanner(`Round over: ${totals[0]}`, `${totals[0] === par ? 'Level par' : totals[0] < par ? `${par - totals[0]} under par` : `${totals[0] - par} over par`}${ev.isBest ? ' · new best!' : ev.best ? ` · best ${ev.best}` : ''}`, ev.isBest ? '#d4af37' : '#2fb8ff', 5);
+          if (ev.isBest || totals[0] <= par) { sfx.play('fanfare'); ctx.confetti?.({ x: 0, y: 0.5, z: 0 }); }
+        } else {
+          const low = Math.min(...totals), winners = S.players.map((_, i) => i).filter(i => totals[i] === low);
+          const title = winners.length > 1 ? 'A tie!' : S.me === winners[0] ? 'You win!' : `${S.players[winners[0]].name} wins!`;
+          showBanner(title, S.players.map((p, i) => `${nameOf(i)} ${totals[i]}`).join(' · '), '#d4af37', 5);
+          sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2);
+        }
+        break;
+      }
+    }
   }
 
   function startHole() {
@@ -329,9 +389,8 @@ export function createGolf(ctx) {
     S.strokes = 0;
     S.phase = 'aim';
     S.aim.set(h.cup[0] - h.tee[0], h.cup[1] - h.tee[1]).normalize();
-    const who = S.players.length > 1 ? `${player().name}'s turn` : '';
-    showBanner(`Hole ${S.hole + 1}: ${h.name}`, `Par ${h.par}${who ? ` · ${who}` : ''}`, '#2fb8ff', 3);
-    goToBall(true);
+    if (S.turn === 0) announce({ k: 'hole', hole: S.hole, p: 0 });
+    if (myTurn()) goToBall();
     drawCard();
   }
 
@@ -360,7 +419,7 @@ export function createGolf(ctx) {
     S.strokes++;
     S.phase = 'between';
     sfx.play(kind === 'water' ? 'splash' : 'floor', { x: S.ball.x, y: 0, z: S.ball.z }, 0.8);
-    showBanner(kind === 'water' ? 'Splash!' : 'Down the pit!', 'One stroke penalty: play again from where you hit it', '#ff9a5a', 2.2);
+    announce({ k: 'hazard', kind, p: S.turn });
     drawCard();
     later(1.6, () => {
       if (S.strokes >= MAX_STROKES) return finishTurn(false);
@@ -368,7 +427,7 @@ export function createGolf(ctx) {
       S.ball = GP.makeGolfBall(spot.x, spot.z);
       S.phase = 'aim';
       drawCard();
-      if (xr) goToBall();
+      if (xr && myTurn()) goToBall();
     });
   }
 
@@ -377,19 +436,10 @@ export function createGolf(ctx) {
     const score = sunk ? S.strokes : MAX_STROKES + 1;
     p.scores[S.hole] = score;
     S.phase = 'between';
-    const diff = score - h.par;
-    if (sunk && S.strokes === 1) {
-      showBanner('HOLE IN ONE!', `${p.name === 'You' ? 'You' : p.name} aced ${h.name}`, '#d4af37', 3.5);
-      sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2); ctx.confetti?.({ x: h.cup[0], y: 0.3, z: h.cup[1] });
-    } else if (sunk) {
-      showBanner(SCORE_NAMES[diff] ?? `${diff > 0 ? '+' : ''}${diff}`, `${score} stroke${score > 1 ? 's' : ''} · par ${h.par}`, diff < 0 ? '#58d68d' : diff === 0 ? '#2fb8ff' : '#ff9a5a', 2.6);
-      if (diff < 0) { sfx.play('cheer', null, 0.7); ctx.cheer?.(1); }
-    } else {
-      showBanner('Picked up', `${MAX_STROKES} strokes is the limit: ${score} on this hole`, '#ff5a5a', 2.6);
-    }
+    announce({ k: sunk ? 'sunk' : 'pickup', p: S.turn, score });
     drawCard();
     later(3.0, () => {
-      if (S.turn + 1 < S.players.length) { S.turn++; showBanner(`${player().name}'s turn`, 'Pass the controls over', '#2fb8ff', 2.5); later(1.2, startTurn); return; }
+      if (S.turn + 1 < S.players.length) { S.turn++; announce({ k: 'turn', p: S.turn }); later(1.2, startTurn); return; }
       if (S.hole + 1 < holes.length) { S.hole++; startHole(); return; }
       finishRound();
     });
@@ -398,19 +448,14 @@ export function createGolf(ctx) {
   function finishRound() {
     S.phase = 'done';
     const totals = S.players.map(p => p.scores.reduce((a, b) => a + b, 0));
-    const par = coursePar(holes);
+    let isBest = false, best = null;
     if (S.players.length === 1) {
       stats.golfBests ??= {};
-      const t = totals[0], best = stats.golfBests[course.id];
-      const isBest = !best || t < best;
-      if (isBest) { stats.golfBests[course.id] = t; save('sh_stats', stats); }
-      showBanner(`Round over: ${t}`, `${t - par === 0 ? 'Level par' : t < par ? `${par - t} under par` : `${t - par} over par`}${isBest ? ' · new best!' : ` · best ${best}`}`, isBest ? '#d4af37' : '#2fb8ff', 5);
-      if (isBest || t <= par) { sfx.play('fanfare'); ctx.confetti?.({ x: 0, y: 0.5, z: 0 }); }
-    } else {
-      const low = Math.min(...totals), winners = S.players.filter((_, i) => totals[i] === low).map(p => p.name);
-      showBanner(winners.length > 1 ? 'A tie!' : `${winners[0]} wins!`, S.players.map((p, i) => `${p.name} ${totals[i]}`).join(' · '), '#d4af37', 5);
-      sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2);
+      best = stats.golfBests[course.id] ?? null;
+      isBest = !best || totals[0] < best;
+      if (isBest) { stats.golfBests[course.id] = totals[0]; save('sh_stats', stats); }
     }
+    announce({ k: 'round', totals, isBest, best });
     drawCard();
     later(5.5, () => ctx.roundOver?.());
   }
@@ -441,7 +486,7 @@ export function createGolf(ctx) {
       const y = y0 + rh * (k + 2);
       if (k === S.turn && S.phase !== 'done') { roundRect(g, 26, y - 26, w - 52, 52, 14); g.fillStyle = '#17284a'; g.fill(); }
       g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = `700 32px ${FONT}`;
-      g.fillText(p.name, 40, y);
+      g.fillText(nameOf(k), 40, y);
       g.textAlign = 'center'; g.font = `800 32px ${FONT}`;
       let total = 0;
       holes.forEach((hh, i) => {
@@ -467,7 +512,7 @@ export function createGolf(ctx) {
   }
   // Pull back from the ball: the putt goes the opposite way to your drag.
   function pointerDown(ndc) {
-    if (S.phase !== 'aim') return false;
+    if (S.phase !== 'aim' || !myTurn()) return false;
     const p = groundAt(ndc);
     if (!p) return false;
     S.drag = { start: p.clone(), now: p.clone() };
@@ -487,10 +532,53 @@ export function createGolf(ctx) {
   function pointerUp() {
     const shot = dragShot();
     S.drag = null; aimArrow.visible = aimDots.visible = false;
-    if (!shot || shot.speed < 0.12 || S.phase !== 'aim') return;
+    if (!shot || shot.speed < 0.12 || S.phase !== 'aim' || !myTurn()) return;
     S.aim.set(shot.dx, shot.dz).normalize();
+    // On a friend's screen the putt goes to the host, who plays it for everyone.
+    if (S.remote) { ctx.remotePutt?.(shot.dx, shot.dz, shot.speed); S.phase = 'sent'; S.sentAt = S.t; return; }
     GP.putt(S.ball, shot.dx, shot.dz, shot.speed);
     onPutt(shot.speed);
+  }
+
+  // ------------------------------------------------- playing with a friend --
+  // Host: everything a friend's screen needs to draw the same moment.
+  function snapshot() {
+    const b = S.ball;
+    return {
+      course: course.id, hole: S.hole, turn: S.turn, phase: S.phase, strokes: S.strokes, t: +S.t.toFixed(3),
+      ball: b && [+b.x.toFixed(4), +b.z.toFixed(4), +(b.y || 0).toFixed(4), +b.vx.toFixed(3), +b.vz.toFixed(3), (b.sunk ? 1 : 0) | (b.hidden ? 2 : 0) | (b.hazard ? 4 : 0)],
+      scores: S.players.map(p => p.scores),
+    };
+  }
+  // Host: a putt from the friend's screen, if it's their turn and the ball is still.
+  function remotePutt(who, dx, dz, speed) {
+    if (S.turn !== who || S.phase !== 'aim' || !(speed > 0.1)) return false;
+    const sp = Math.min(GP.MAX_PUTT, speed);
+    S.aim.set(dx, dz).normalize();
+    GP.putt(S.ball, dx, dz, sp);
+    onPutt(sp);
+    return true;
+  }
+  // Friend: start watching the host's round. names as the host has them; me = our index.
+  function startRemote(courseId, names, me) {
+    useCourse(courseId);
+    S.players = names.map(name => ({ name, scores: [] }));
+    S.me = me; S.remote = true; S.timers = []; S.hole = -1; S.phase = 'idle';
+    root.visible = true;
+  }
+  // Friend: take the host's latest snapshot.
+  function applyRemote(m) {
+    if (m.course !== course.id) useCourse(m.course);
+    if (m.hole !== S.hole) { S.hole = m.hole; showHole(m.hole); S.ph = GP.prepareHole(holeNow()); screenCamera(0, true); }
+    const turnChanged = m.turn !== S.turn;
+    S.turn = m.turn; S.strokes = m.strokes;
+    // Just sent a putt: wait for the host to start it rolling (unless it never does).
+    if (!(S.phase === 'sent' && m.phase === 'aim' && S.t - S.sentAt < 1.5)) S.phase = m.phase;
+    if (Math.abs(S.t - m.t) > 0.25) S.t = m.t;   // keep the moving parts in step
+    const [x, z, y, vx, vz, f] = m.ball ?? [0, 0, 0, 0, 0, 0];
+    S.ball = Object.assign(S.ball ?? GP.makeGolfBall(x, z), { x, z, y, vx, vz, sunk: !!(f & 1), hidden: !!(f & 2), hazard: f & 4 ? 'yes' : null, moving: m.phase === 'rolling' });
+    m.scores.forEach((sc, i) => { if (S.players[i]) S.players[i].scores = sc; });
+    if (turnChanged || S._lastDrawn !== `${m.hole}${m.turn}${m.strokes}${m.phase}`) { S._lastDrawn = `${m.hole}${m.turn}${m.strokes}${m.phase}`; drawCard(); }
   }
 
   // Screen camera: behind the ball, looking along the aim.
@@ -523,6 +611,8 @@ export function createGolf(ctx) {
     if (hb?.water) hb.water.forEach(m => { m.material.map.offset.x = S.t * 0.02; m.material.map.offset.y = Math.sin(S.t * 0.7) * 0.02; });
     if (paused) { tracker.invalidate(); return; }
     S.t += dt;
+    // A friend's screen only draws what the host sends.
+    if (S.remote) { drawBall(dt); if (!xr) screenCamera(dt, false); drawAim(); return; }
     const due = S.timers.filter(t => t.t <= S.t);
     if (due.length) { S.timers = S.timers.filter(t => t.t > S.t); due.forEach(t => t.fn()); }
 
@@ -530,7 +620,7 @@ export function createGolf(ctx) {
     const n = Math.max(1, Math.ceil(dt / 0.002)), h = dt / n;
     for (let i = 1; i <= n; i++) {
       const tt = S.t - dt + h * i;
-      if (S.phase === 'aim' && tracker.valid) {
+      if (S.phase === 'aim' && tracker.valid && myTurn()) {
         const sp = GP.putterContact(S.ball, tracker.substep((i - 1) / n, i / n));
         if (sp > 0) onPutt(sp);
       }
@@ -558,7 +648,7 @@ export function createGolf(ctx) {
             else {
               S.phase = 'aim'; drawCard();
               // Bring you to the ball if it's out of reach.
-              if (xr) { const v = ctx.viewerXZ(); if (Math.hypot(v.x - S.ball.x, v.z - S.ball.z) > 1.1) later(0.6, goToBall); }
+              if (xr && myTurn()) { const v = ctx.viewerXZ(); if (Math.hypot(v.x - S.ball.x, v.z - S.ball.z) > 1.1) later(0.6, goToBall); }
             }
           }
         }
@@ -566,18 +656,27 @@ export function createGolf(ctx) {
       }
     }
 
-    // Ball: sinks out of sight once it's in (or in the water, or in a pipe).
+    drawBall(dt);
+    drawAim();
+    if (!xr) screenCamera(dt, false);
+  }
+
+  // Ball: sinks out of sight once it's in (or in the water, or in a pipe).
+  function drawBall(dt) {
     const b = S.ball;
-    if (b) {
-      ballMesh.visible = !b.sunk && !b.hidden && !b.hazard;
-      ballShadow.visible = ballMesh.visible && !(b.y > 0.15);
-      ballMesh.position.set(b.x, R + 0.003 + (b.y || 0), b.z);
-      ballMesh.rotation.x -= b.vz * dt / R; ballMesh.rotation.z += b.vx * dt / R;
-      ballShadow.position.set(b.x + 0.006, 0.0055, b.z + 0.006);
-    }
-    // Screen aiming: arrow and a dotted preview of the first part of the roll.
+    if (!b) return;
+    ballMesh.visible = !b.sunk && !b.hidden && !b.hazard;
+    ballShadow.visible = ballMesh.visible && !(b.y > 0.15);
+    ballMesh.position.set(b.x, R + 0.003 + (b.y || 0), b.z);
+    ballMesh.rotation.x -= b.vz * dt / R; ballMesh.rotation.z += b.vx * dt / R;
+    ballShadow.position.set(b.x + 0.006, 0.0055, b.z + 0.006);
+  }
+
+  // Screen aiming: arrow and a dotted preview of the first part of the roll.
+  function drawAim() {
+    const b = S.ball;
     const shot = dragShot();
-    if (shot && shot.speed > 0.05) {
+    if (b && shot && shot.speed > 0.05) {
       const l = 0.12 + shot.speed * 0.22, ux = shot.dx / Math.hypot(shot.dx, shot.dz), uz = shot.dz / Math.hypot(shot.dx, shot.dz);
       aimArrow.visible = true;
       aimArrow.scale.set(0.035, l, 1);
@@ -591,7 +690,6 @@ export function createGolf(ctx) {
       aimDots.geometry.setFromPoints(pts.slice(0, 12));
       aimDots.visible = true;
     }
-    if (!xr) screenCamera(dt, false);
   }
 
   return {
@@ -599,8 +697,12 @@ export function createGolf(ctx) {
     get active() { return root.visible; },
     get phase() { return S.phase; },
     get state() { return S; },
-    start(n, courseId) { start(n, courseId); },
+    start(players, courseId, me) { start(players, courseId, me); },
     get courseId() { return course.id; },
+    get players() { return S.players.map(p => p.name); },
+    snapshot, remotePutt, startRemote, applyRemote,
+    remoteAnnounce(ev) { announce(ev); },
+    makePutter,
     stop() { root.visible = false; S.phase = 'idle'; S.timers = []; S.drag = null; aimArrow.visible = aimDots.visible = false; },
     update, goToBall, pointerDown, pointerMove, pointerUp, drawCard,
     snapCamera() { screenCamera(0, true); },

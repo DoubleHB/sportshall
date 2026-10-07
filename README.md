@@ -12,6 +12,7 @@ step. Live at https://doublehb.github.io/sportshall/
 - **Exhibition** (Match > Watch two robots play): pick any two robots and watch from a courtside seat; they trash-talk each other.
 - **Paddle feel** (Settings > Paddle feel…): sweet spot size, bounce, spin grip, swing power and smoothing, plus a log of your last hits (swing speed, ball speed, spin, result). "Share these…" makes a link and QR code (`?feel=82_86_60_105_0_-10`, see `src/share.js`); opening it asks before changing anything.
 - **Phones and tablets**: drag to move the paddle, Serve and Menu buttons, wider view when upright. Works for playing solo and for joining a friend.
+- **Mini golf with a friend** (Mini Golf > Friend): host as below, then "Start a round together". You're player 1, they're player 2; on their turn they drag-and-release on their own screen and the putt is sent to you. Your game runs the course and streams snapshots (`golf.snapshot()`/`applyRemote`); announcements go out as events (`gev`) so each screen words them for its own player ("Your turn" / "Sam's turn").
 - **Friend**: host a game from the headset; a friend on a PC opens the same link, chooses "Join a friend's game" and types the 4-letter code. Peer-to-peer through PeerJS (free cloud matchmaker); the host runs the physics and the friend's browser only sends where their mouse points.
 
 **Mini golf** (the Mini Golf switch at the top of the menu): two courses on the
