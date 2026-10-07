@@ -2,7 +2,7 @@
 // scorecard. In VR you swing a real putter (it hangs from your paddle hand's
 // pointer); on a screen you pull back from the ball and let go.
 import * as THREE from 'three';
-import { HOLES, GOLF_BALL_R as R, CUP_R, MAX_STROKES, coursePar } from './course.js';
+import { COURSES, GOLF_BALL_R as R, CUP_R, MAX_STROKES, coursePar } from './course.js';
 import * as GP from './physics.js';
 import { BladeTracker } from '../desk.js';
 import { CanvasBoard, roundRect, FONT, C } from '../panel.js';
@@ -146,9 +146,111 @@ export function createGolf(ctx) {
       blades.add(hub);
       g.add(blades);
     }
-    return { group: g, blades };
+    // ----- Trickshot features -----
+    const chrome = new THREE.MeshStandardMaterial({ color: 0xd9e2ec, metalness: 0.85, roughness: 0.2 });
+    const loopMat = new THREE.MeshStandardMaterial({ color: 0x2fb8ff, metalness: 0.4, roughness: 0.3, emissive: 0x0a3550 });
+    // Loops: two rails following the ball's corkscrew path.
+    for (const L of hole.loops ?? []) {
+      const [dx, dz] = L.dir, sx = -dz, sz = dx;
+      for (const side of [-1, 1]) {
+        const pts = [];
+        pts.push(new THREE.Vector3(L.x - dx * 0.25 + sx * side * 0.035, 0.012, L.z - dz * 0.25 + sz * side * 0.035));
+        for (let k = 0; k <= 32; k++) {
+          const p = GP.loopPoint(L, k / 32 * 2 * Math.PI);
+          pts.push(new THREE.Vector3(p.x + sx * side * 0.035, p.y + 0.012, p.z + sz * side * 0.035));
+        }
+        pts.push(new THREE.Vector3(L.x + dx * 0.25 + sx * side * 0.035, 0.012, L.z + dz * 0.25 + sz * side * 0.035));
+        g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 120, 0.011, 8), loopMat));
+      }
+    }
+    // Sliders: a dark track across the lane and the striped block that runs on it.
+    const sliders = (hole.sliders ?? []).map(s => {
+      const track = new THREE.Mesh(new THREE.PlaneGeometry(Math.abs(s.x1 - s.x0) + s.w, 0.1), new THREE.MeshStandardMaterial({ color: 0x2a3140, roughness: 0.8 }));
+      track.rotation.x = -Math.PI / 2; track.position.set((s.x0 + s.x1) / 2, 0.004, s.z);
+      g.add(track);
+      const block = new THREE.Mesh(new THREE.BoxGeometry(s.w, 0.1, 0.08), new THREE.MeshStandardMaterial({ color: 0xffc93c, roughness: 0.5 }));
+      block.position.set(0, 0.05, s.z);
+      for (const e of [-1, 1]) { const cap = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.102, 0.082), new THREE.MeshStandardMaterial({ color: 0x15171c })); cap.position.x = e * (s.w / 2 - 0.025); block.add(cap); }
+      g.add(block);
+      return { mesh: block, def: s };
+    });
+    // Spinners: a bar turning on a post.
+    const spinners = (hole.spinners ?? []).map(s => {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.12, 16), chrome);
+      post.position.set(s.x, 0.06, s.z); g.add(post);
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(s.len * 2, 0.07, 0.06), new THREE.MeshStandardMaterial({ color: 0xff7a1a, roughness: 0.45 }));
+      bar.position.set(s.x, 0.06, s.z);
+      g.add(bar);
+      return { mesh: bar, def: s };
+    });
+    // Jumps: a sloping ramp up to the edge of the pit.
+    for (const J of hole.jumps ?? []) {
+      const len = J.rampLen, rise = Math.tan(J.angle) * len * 0.45;
+      const ramp = new THREE.Mesh(new THREE.BoxGeometry(J.x1 - J.x0, 0.02, Math.hypot(len, rise)), greenMat);
+      // Centred half a ramp back from the edge, tilted so the edge end is the high end.
+      ramp.position.set((J.x0 + J.x1) / 2, rise / 2, J.edge - J.dir[1] * len / 2);
+      ramp.rotation.x = Math.atan2(rise, len) * -J.dir[1];
+      g.add(ramp);
+      const lip = new THREE.Mesh(new THREE.BoxGeometry(J.x1 - J.x0, 0.015, 0.03), capMat);
+      lip.position.set((J.x0 + J.x1) / 2, rise, J.edge);
+      g.add(lip);
+    }
+    // Pits: a dark drop with hazard stripes round the edge.
+    const stripes = (() => {
+      const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+      const x = c.getContext('2d'); x.fillStyle = '#111'; x.fillRect(0, 0, 64, 64);
+      x.fillStyle = '#ffc93c'; for (let i = -64; i < 128; i += 32) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + 16, 0); x.lineTo(i + 80, 64); x.lineTo(i + 64, 64); x.fill(); }
+      const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.repeat.set(12, 1); return t;
+    })();
+    for (const poly of hole.pits ?? []) {
+      const m = new THREE.Mesh(new THREE.ShapeGeometry(shapeOf(poly)), new THREE.MeshBasicMaterial({ color: 0x050608 }));
+      m.rotation.x = -Math.PI / 2; m.position.y = 0.005; g.add(m);
+      const xs = poly.map(p => p[0]), zs = poly.map(p => p[1]);
+      for (const z of [Math.min(...zs), Math.max(...zs)]) {
+        const band = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(...xs) - Math.min(...xs), 0.04), new THREE.MeshBasicMaterial({ map: stripes }));
+        band.rotation.x = -Math.PI / 2; band.position.set((Math.min(...xs) + Math.max(...xs)) / 2, 0.006, z);
+        g.add(band);
+      }
+    }
+    // Water: rippling blue.
+    const waterTex = (() => {
+      const c = document.createElement('canvas'); c.width = c.height = 128;
+      const x = c.getContext('2d'); x.fillStyle = '#1f6fd1'; x.fillRect(0, 0, 128, 128);
+      for (let i = 0; i < 60; i++) { x.strokeStyle = `rgba(255,255,255,${0.08 + Math.random() * 0.12})`; x.lineWidth = 2; x.beginPath(); const yy = Math.random() * 128, xx = Math.random() * 128; x.moveTo(xx, yy); x.quadraticCurveTo(xx + 8, yy - 4, xx + 16, yy); x.stroke(); }
+      const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.repeat.set(4, 4); return t;
+    })();
+    const water = (hole.water ?? []).map(poly => {
+      const m = new THREE.Mesh(new THREE.ShapeGeometry(shapeOf(poly)), new THREE.MeshStandardMaterial({ map: waterTex.clone(), roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.92 }));
+      m.material.map.needsUpdate = true;
+      m.rotation.x = -Math.PI / 2; m.position.y = 0.006; g.add(m);
+      return m;
+    });
+    // Pipes: a mouth on the floor, an arching tube, and an exit.
+    const pipeMat = new THREE.MeshStandardMaterial({ color: 0x2bb24c, roughness: 0.35, metalness: 0.2 });
+    (hole.pipes ?? []).forEach((pp, k) => {
+      for (const [x, z] of [pp.in, pp.out]) {
+        const mouth = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.06, 24, 1, true), pipeMat);
+        mouth.material.side = THREE.DoubleSide;
+        mouth.position.set(x, 0.03, z); g.add(mouth);
+        const hole2 = new THREE.Mesh(new THREE.CircleGeometry(0.075, 24), new THREE.MeshBasicMaterial({ color: 0x050608 }));
+        hole2.rotation.x = -Math.PI / 2; hole2.position.set(x, 0.007, z); g.add(hole2);
+      }
+      const mid = new THREE.Vector3((pp.in[0] + pp.out[0]) / 2, 0.55 + k * 0.15, (pp.in[1] + pp.out[1]) / 2);
+      const curve = new THREE.CatmullRomCurve3([new THREE.Vector3(pp.in[0], 0.06, pp.in[1]), new THREE.Vector3(pp.in[0], 0.35 + k * 0.1, pp.in[1]), mid,
+        new THREE.Vector3(pp.out[0], 0.35 + k * 0.1, pp.out[1]), new THREE.Vector3(pp.out[0], 0.06, pp.out[1])]);
+      g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 60, 0.05, 12), new THREE.MeshStandardMaterial({ color: k ? 0x2bb24c : 0x1f9e40, roughness: 0.35, transparent: true, opacity: 0.85 })));
+    });
+    return { group: g, blades, sliders, spinners, water };
   }
-  const built = HOLES.map((h, i) => { const b = buildHole(h, i); b.group.visible = false; root.add(b.group); return b; });
+  // Each course's holes are built the first time it's played.
+  const builtCache = {};
+  let course = COURSES.classic, holes = course.holes, built = null;
+  function useCourse(id) {
+    course = COURSES[id] ?? COURSES.classic; holes = course.holes;
+    built?.forEach(b => { b.group.visible = false; });
+    built = builtCache[course.id] ??= holes.map((h, i) => { const b = buildHole(h, i); b.group.visible = false; root.add(b.group); return b; });
+  }
+  useCourse('classic');
 
   // ------------------------------------------------- ball, putter, arrow --
   const ballMesh = new THREE.Mesh(new THREE.SphereGeometry(R, 24, 16), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 }));
@@ -194,18 +296,19 @@ export function createGolf(ctx) {
   };
   const later = (sec, fn) => S.timers.push({ t: S.t + sec, fn });
 
-  const holeNow = () => HOLES[S.hole];
+  const holeNow = () => holes[S.hole];
   const player = () => S.players[S.turn];
 
   function showHole(i) {
     built.forEach((b, k) => { b.group.visible = k === i; });
-    const h = HOLES[i];
+    const h = holes[i];
     // Card stands to the left of the tee, facing back down the hole.
     card.mesh.position.set(h.tee[0] - 1.25, 1.35, h.tee[1] - 0.2);
     card.mesh.rotation.set(0, 0.45, 0);
   }
 
-  function start(nPlayers = 1) {
+  function start(nPlayers = 1, courseId = 'classic') {
+    useCourse(courseId);
     S.players = Array.from({ length: nPlayers }, (_, i) => ({ name: nPlayers === 1 ? 'You' : `Player ${i + 1}`, scores: [] }));
     S.hole = 0; S.timers = [];
     root.visible = true;
@@ -222,6 +325,7 @@ export function createGolf(ctx) {
   function startTurn() {
     const h = holeNow();
     S.ball = GP.makeGolfBall(h.tee[0], h.tee[1]);
+    S.lastSpot = null;
     S.strokes = 0;
     S.phase = 'aim';
     S.aim.set(h.cup[0] - h.tee[0], h.cup[1] - h.tee[1]).normalize();
@@ -243,11 +347,29 @@ export function createGolf(ctx) {
   }
 
   function onPutt(speed) {
+    S.lastSpot = { x: S.ball.x, z: S.ball.z };   // where a penalty drop goes back to
     S.strokes++;
     S.phase = 'rolling';
     sfx.play('putt', { x: S.ball.x, y: R, z: S.ball.z }, Math.min(1, speed / 4));
     ctx.haptic?.(Math.min(1, 0.3 + speed / 6), 30);
     drawCard();
+  }
+
+  // In the water or down a pit: one stroke penalty, play again from where you hit it.
+  function onHazard(kind, xr) {
+    S.strokes++;
+    S.phase = 'between';
+    sfx.play(kind === 'water' ? 'splash' : 'floor', { x: S.ball.x, y: 0, z: S.ball.z }, 0.8);
+    showBanner(kind === 'water' ? 'Splash!' : 'Down the pit!', 'One stroke penalty: play again from where you hit it', '#ff9a5a', 2.2);
+    drawCard();
+    later(1.6, () => {
+      if (S.strokes >= MAX_STROKES) return finishTurn(false);
+      const spot = S.lastSpot ?? { x: holeNow().tee[0], z: holeNow().tee[1] };
+      S.ball = GP.makeGolfBall(spot.x, spot.z);
+      S.phase = 'aim';
+      drawCard();
+      if (xr) goToBall();
+    });
   }
 
   function finishTurn(sunk) {
@@ -268,7 +390,7 @@ export function createGolf(ctx) {
     drawCard();
     later(3.0, () => {
       if (S.turn + 1 < S.players.length) { S.turn++; showBanner(`${player().name}'s turn`, 'Pass the controls over', '#2fb8ff', 2.5); later(1.2, startTurn); return; }
-      if (S.hole + 1 < HOLES.length) { S.hole++; startHole(); return; }
+      if (S.hole + 1 < holes.length) { S.hole++; startHole(); return; }
       finishRound();
     });
   }
@@ -276,11 +398,12 @@ export function createGolf(ctx) {
   function finishRound() {
     S.phase = 'done';
     const totals = S.players.map(p => p.scores.reduce((a, b) => a + b, 0));
-    const par = coursePar();
+    const par = coursePar(holes);
     if (S.players.length === 1) {
-      const t = totals[0], best = stats.golfBest;
+      stats.golfBests ??= {};
+      const t = totals[0], best = stats.golfBests[course.id];
       const isBest = !best || t < best;
-      if (isBest) { stats.golfBest = t; save('sh_stats', stats); }
+      if (isBest) { stats.golfBests[course.id] = t; save('sh_stats', stats); }
       showBanner(`Round over: ${t}`, `${t - par === 0 ? 'Level par' : t < par ? `${par - t} under par` : `${t - par} over par`}${isBest ? ' · new best!' : ` · best ${best}`}`, isBest ? '#d4af37' : '#2fb8ff', 5);
       if (isBest || t <= par) { sfx.play('fanfare'); ctx.confetti?.({ x: 0, y: 0.5, z: 0 }); }
     } else {
@@ -302,18 +425,18 @@ export function createGolf(ctx) {
     const hole = holeNow();
     g.textBaseline = 'middle';
     g.textAlign = 'left'; g.fillStyle = '#58d68d'; g.font = `800 40px ${FONT}`;
-    g.fillText(`MINI GOLF · HOLE ${S.hole + 1}`, 40, 56);
+    g.fillText(`${course.name.toUpperCase()} · HOLE ${S.hole + 1}`, 40, 56);
     g.textAlign = 'right'; g.fillStyle = C.dim; g.font = `600 32px ${FONT}`;
     g.fillText(`${hole.name} · par ${hole.par}`, w - 40, 56);
     // Grid: names + 6 holes + total.
-    const x0 = 230, cw = (w - x0 - 150) / HOLES.length, y0 = 120, rh = 62;
+    const x0 = 230, cw = (w - x0 - 150) / holes.length, y0 = 120, rh = 62;
     g.font = `700 28px ${FONT}`; g.fillStyle = C.dim; g.textAlign = 'center';
-    HOLES.forEach((hh, i) => { g.fillStyle = i === S.hole ? '#ffd23f' : C.dim; g.fillText(String(i + 1), x0 + cw * (i + 0.5), y0); });
+    holes.forEach((hh, i) => { g.fillStyle = i === S.hole ? '#ffd23f' : C.dim; g.fillText(String(i + 1), x0 + cw * (i + 0.5), y0); });
     g.fillStyle = C.dim; g.fillText('Tot', w - 85, y0);
     g.textAlign = 'left'; g.fillText('Par', 40, y0 + rh);
     g.textAlign = 'center';
-    HOLES.forEach((hh, i) => g.fillText(String(hh.par), x0 + cw * (i + 0.5), y0 + rh));
-    g.fillText(String(coursePar()), w - 85, y0 + rh);
+    holes.forEach((hh, i) => g.fillText(String(hh.par), x0 + cw * (i + 0.5), y0 + rh));
+    g.fillText(String(coursePar(holes)), w - 85, y0 + rh);
     S.players.forEach((p, k) => {
       const y = y0 + rh * (k + 2);
       if (k === S.turn && S.phase !== 'done') { roundRect(g, 26, y - 26, w - 52, 52, 14); g.fillStyle = '#17284a'; g.fill(); }
@@ -321,7 +444,7 @@ export function createGolf(ctx) {
       g.fillText(p.name, 40, y);
       g.textAlign = 'center'; g.font = `800 32px ${FONT}`;
       let total = 0;
-      HOLES.forEach((hh, i) => {
+      holes.forEach((hh, i) => {
         const sc = p.scores[i];
         if (sc == null) { if (i === S.hole && k === S.turn && S.strokes) { g.fillStyle = '#9fd8ff'; g.fillText(`(${S.strokes})`, x0 + cw * (i + 0.5), y); } return; }
         total += sc;
@@ -392,7 +515,12 @@ export function createGolf(ctx) {
   function update(dt, { xr, paused, holder }) {
     if (!root.visible) return;
     // Windmill blades always turn (they're scenery even when paused).
-    built.forEach((b, i) => { if (b.blades && i === S.hole) b.blades.rotation.z = -(S.t * HOLES[i].windmill.speed); });
+    // Moving parts: windmill blades, sliders and spinners (scenery even when paused).
+    const hb = built[S.hole];
+    if (hb?.blades) hb.blades.rotation.z = -(S.t * holes[S.hole].windmill.speed);
+    hb?.sliders.forEach(s => { s.mesh.position.x = GP.sliderAt(s.def, S.t).x; });
+    hb?.spinners.forEach(s => { s.mesh.rotation.y = -GP.spinnerAngle(s.def, S.t); });
+    if (hb?.water) hb.water.forEach(m => { m.material.map.offset.x = S.t * 0.02; m.material.map.offset.y = Math.sin(S.t * 0.7) * 0.02; });
     if (paused) { tracker.invalidate(); return; }
     S.t += dt;
     const due = S.timers.filter(t => t.t <= S.t);
@@ -406,12 +534,24 @@ export function createGolf(ctx) {
         const sp = GP.putterContact(S.ball, tracker.substep((i - 1) / n, i / n));
         if (sp > 0) onPutt(sp);
       }
+      // A sitting ball can still be knocked by a slider or spinner (no stroke counted).
+      if (S.phase === 'aim' && (S.ph.hole.sliders || S.ph.hole.spinners)) {
+        GP.golfStep(S.ball, S.ph, h, tt, evs);
+        if (S.ball.moving) S.phase = 'rolling';
+      }
       if (S.phase === 'rolling') {
         GP.golfStep(S.ball, S.ph, h, tt, evs);
+        const pos = { x: S.ball.x, y: R, z: S.ball.z };
         for (const e of evs) {
-          if (e.type === 'wall' || e.type === 'blade') sfx.play('clack', { x: S.ball.x, y: R, z: S.ball.z }, e.speed / 3);
-          else if (e.type === 'bumper') sfx.play('clack', { x: S.ball.x, y: R, z: S.ball.z }, e.speed / 2);
-          else if (e.type === 'lip') sfx.play('table', { x: S.ball.x, y: R, z: S.ball.z }, 0.4);
+          if (e.type === 'wall' || e.type === 'blade') sfx.play('clack', pos, e.speed / 3);
+          else if (e.type === 'bumper') sfx.play('clack', pos, e.speed / 2);
+          else if (e.type === 'lip') sfx.play('table', pos, 0.4);
+          else if (e.type === 'loopIn' || e.type === 'jump') sfx.play('whoosh', pos, 1);
+          else if (e.type === 'loop' && e.pass) { sfx.play('cheer', null, 0.3); ctx.cheer?.(0.6); }
+          else if (e.type === 'land') sfx.play('table', pos, 0.6);
+          else if (e.type === 'pipe') sfx.play('net', pos, 0.8);
+          else if (e.type === 'pipeOut') sfx.play('clack', pos, 0.6);
+          else if (e.type === 'hazard') onHazard(e.kind, xr);
           else if (e.type === 'cup') { sfx.play('cup', { x: S.ball.x, y: 0, z: S.ball.z }); finishTurn(true); }
           else if (e.type === 'stop') {
             if (S.strokes >= MAX_STROKES) finishTurn(false);
@@ -426,11 +566,12 @@ export function createGolf(ctx) {
       }
     }
 
-    // Ball: sinks out of sight once it's in.
+    // Ball: sinks out of sight once it's in (or in the water, or in a pipe).
     const b = S.ball;
     if (b) {
-      ballMesh.visible = ballShadow.visible = !b.sunk;
-      ballMesh.position.set(b.x, R + 0.003, b.z);
+      ballMesh.visible = !b.sunk && !b.hidden && !b.hazard;
+      ballShadow.visible = ballMesh.visible && !(b.y > 0.15);
+      ballMesh.position.set(b.x, R + 0.003 + (b.y || 0), b.z);
       ballMesh.rotation.x -= b.vz * dt / R; ballMesh.rotation.z += b.vx * dt / R;
       ballShadow.position.set(b.x + 0.006, 0.0055, b.z + 0.006);
     }
@@ -458,7 +599,8 @@ export function createGolf(ctx) {
     get active() { return root.visible; },
     get phase() { return S.phase; },
     get state() { return S; },
-    start(n) { start(n); },
+    start(n, courseId) { start(n, courseId); },
+    get courseId() { return course.id; },
     stop() { root.visible = false; S.phase = 'idle'; S.timers = []; S.drag = null; aimArrow.visible = aimDots.visible = false; },
     update, goToBall, pointerDown, pointerMove, pointerUp, drawCard,
     snapCamera() { screenCamera(0, true); },

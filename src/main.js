@@ -23,15 +23,15 @@ import { newCup, nextMatch, record as cupRecordResult, quickMatch, youAreOut, in
 import { decodeFeel, feelLink } from './share.js';
 import { LESSONS, LESSON_BALLS, lessonById, judgeHit, judgeShot, judgeServe, starsFor } from './lessons.js';
 import { createGolf } from './golf/game.js';
-import { HOLES as GOLF_HOLES, coursePar } from './golf/course.js';
+import { COURSES as GOLF_COURSES, coursePar } from './golf/course.js';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
 // ------------------------------------------------------------- settings --
 const FEEL = { size: PH.PADDLE.radius, bounce: PH.PADDLE.e, grip: PH.PADDLE.mu, power: 1, smooth: 0 };
-const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1 };
+const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1, golfCourse: 'classic' };
 const settings = load('sh_settings', DEFAULTS);
 settings.feel = { ...FEEL, ...(settings.feel || {}) };
 // Paddle feel (Settings > Paddle feel): each step, its limits, and how to show it.
@@ -51,6 +51,8 @@ const stats = load('sh_stats', { wins: {}, losses: {}, bestStreak: 0, ladder: { 
 if (!stats.ladder) stats.ladder = { beaten: [], champion: false };
 stats.cups ??= 0;
 stats.lessons ??= {};     // best stars per lesson
+stats.golfBests ??= {};   // best solo round per golf course
+if (stats.golfBest && !stats.golfBests.classic) stats.golfBests.classic = stats.golfBest;   // from v0.6
 // The cup in progress (kept between visits).
 let cupSaved = null;
 try { cupSaved = JSON.parse(localStorage.getItem('sh_cup') || 'null'); } catch { /* none */ }
@@ -398,8 +400,9 @@ function renderMenu(ui) {
   // Which sport: the two big switches at the top right.
   ui.button('sport:tt', w - 60 - 2 * 250 - 14, 36, 250, 70, 'Table Tennis', { selected: !golfing, size: 30 });
   ui.button('sport:golf', w - 60 - 250, 36, 250, 70, 'Mini Golf', { selected: golfing, size: 30 });
+  const gc = GOLF_COURSES[settings.golfCourse] ?? GOLF_COURSES.classic;
   const honours = golfing
-    ? (stats.golfBest ? `Best round: ${stats.golfBest} (par ${coursePar()})` : '')
+    ? (stats.golfBests[gc.id] ? `${gc.name} best: ${stats.golfBests[gc.id]} (par ${coursePar(gc.holes)})` : '')
     : [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
   if (honours) ui.text(honours, w - 60, 140, { size: 30, weight: 800, color: '#d4af37', align: 'right' });
   const tabs = golfing ? [['golf', 'Play'], ['settings', 'Settings']]
@@ -459,18 +462,20 @@ function renderMenu(ui) {
     });
     if (inMatch) ui.button('resume', L, 950, width, 64, 'Resume match', { primary: true, size: 32 });
   } else if (G.tab === 'golf') {
-    dim(`Six holes round the hall: ${GOLF_HOLES.map(h => h.name).join(', ')}. Par ${coursePar()}.`, 298);
-    dim(G.inXR ? 'Point your paddle hand at the floor: that\'s your putter. Swing it gently through the ball.'
+    label('Course', 292);
+    ui.options('golfCourse', L, 308, width, 100, Object.values(GOLF_COURSES).map(c => [c.id, c.name, `par ${coursePar(c.holes)} · ${c.id === 'trick' ? 'loops, jumps, water' : 'a gentle six'}`]), gc.id);
+    dim(gc.holes.map(h => h.name).join(' · '), 452);
+    dim(G.inXR ? 'Point your paddle hand at the floor: that\'s your putter. Free hand trigger: go to your ball.'
       : isTouch() ? 'Drag back from the ball and let go to putt: the further you drag, the harder it goes.'
-        : 'Drag back from the ball with the mouse and let go to putt: further = harder.', 342);
-    dim(G.inXR ? 'Free hand trigger: go to your ball. Six strokes at most on each hole.' : 'Six strokes at most on each hole.', 382);
-    label('Players (take turns)', 450);
-    ui.options('golfPlayers', L, 468, width, 92, [[1, '1 player'], [2, '2 players'], [3, '3 players'], [4, '4 players']], settings.golfPlayers);
-    ui.text(stats.golfBest ? `Your best round: ${stats.golfBest} (${stats.golfBest - coursePar() === 0 ? 'level par' : stats.golfBest < coursePar() ? `${coursePar() - stats.golfBest} under` : `${stats.golfBest - coursePar()} over`})` : 'No rounds yet. Par is ' + coursePar() + '.', L, 630, { size: 36, weight: 800, color: stats.golfBest ? '#d4af37' : C.text });
+        : 'Drag back from the ball with the mouse and let go to putt: further = harder.', 492);
+    label('Players (take turns)', 552);
+    ui.options('golfPlayers', L, 568, width, 84, [[1, '1 player'], [2, '2 players'], [3, '3 players'], [4, '4 players']], settings.golfPlayers);
+    const best = stats.golfBests[gc.id], par = coursePar(gc.holes);
+    ui.text(best ? `Your best on ${gc.name}: ${best} (${best === par ? 'level par' : best < par ? `${par - best} under` : `${best - par} over`})` : `No rounds on ${gc.name} yet. Par is ${par}.`, L, 712, { size: 34, weight: 800, color: best ? '#d4af37' : C.text });
     if (G.mode === 'golf' && golf.inProgress()) {
-      ui.button('resume', L, 700, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
-      ui.button('golf:start', L + width / 2 + 10, 700, width / 2 - 10, 120, 'New round', { size: 42 });
-    } else ui.button('golf:start', L, 700, width, 120, 'Start a round', { primary: true, size: 50 });
+      ui.button('resume', L, 770, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
+      ui.button('golf:start', L + width / 2 + 10, 770, width / 2 - 10, 120, 'New round', { size: 42 });
+    } else ui.button('golf:start', L, 770, width, 120, `Play ${gc.name}`, { primary: true, size: 50 });
   } else if (G.tab === 'cup') {
     renderCup(ui, L, R, width, dim);
   } else if (G.tab === 'share') {
@@ -734,6 +739,7 @@ function onMenuClick(id) {
   }
   else if (id === 'golf:start') startGolf();
   else if (k === 'golfPlayers') settings.golfPlayers = +v;
+  else if (k === 'golfCourse') settings.golfCourse = v;
   else if (k === 'cup') {
     if (v === 'new') { G.cup = newCup(); saveCup(); }
     else if (v === 'play') cupPlayNext(false);
@@ -814,7 +820,7 @@ function startGolf(players = settings.golfPlayers) {
   W.table.visible = false; W.robot.root.visible = false; scoreboard.mesh.visible = false;
   desk.outer.visible = false;
   closeMenu();
-  golf.start(players);
+  golf.start(players, settings.golfCourse);
   attachHands();
   if (!G.inXR) golf.snapCamera();
 }

@@ -57,7 +57,70 @@ export const HOLES = [
   },
 ];
 
-export const coursePar = () => HOLES.reduce((n, h) => n + h.par, 0);
+// The Trickshot course: loops, moving obstacles, a jump, pipes and water.
+//   loops:   [{ x, z, dir, r, half }]  entry point, travel direction, loop radius, channel half-width
+//   sliders: [{ z, x0, x1, w, period, phase }]  a block sliding across the lane between x0 and x1
+//   spinners:[{ x, z, len, speed }]  a bar turning round (x, z), `len` each side
+//   jumps:   [{ edge, x0, x1, dir, angle }]  a ramp ending at z = edge; launches the ball along dir
+//   pits / water: polygons; roll (or land) in one and it's a penalty stroke
+//   pipes:   [{ in: [x, z], out: [x, z], dir: [dx, dz] }]
+export const TRICK = [
+  {
+    name: 'Loop the Loop', par: 3,
+    tee: [0, 2.0], cup: [0, -2.0],
+    outline: rect(-0.45, 2.4, 0.45, -2.4),
+    // A funnel into a narrow channel through the loop, and out again.
+    walls: [[-0.45, 0.8, -0.07, 0.32], [0.45, 0.8, 0.07, 0.32], [-0.07, 0.32, -0.07, 0.08], [0.07, 0.32, 0.07, 0.08],
+      [-0.07, 0.08, -0.45, -0.4], [0.07, 0.08, 0.45, -0.4]],
+    loops: [{ x: 0, z: 0.25, dir: [0, -1], r: 0.2, half: 0.07 }],
+  },
+  {
+    name: 'Sliders', par: 3,
+    tee: [0, 2.1], cup: [0.2, -2.1],
+    outline: rect(-0.6, 2.5, 0.6, -2.5),
+    sliders: [{ z: 0.8, x0: -0.38, x1: 0.38, w: 0.42, period: 2.6, phase: 0 }, { z: -0.6, x0: -0.33, x1: 0.33, w: 0.52, period: 1.8, phase: 1.3 }],
+  },
+  {
+    name: 'The Jump', par: 3,
+    tee: [0, 2.0], cup: [-0.2, -1.7],
+    outline: rect(-0.5, 2.4, 0.5, -2.4),
+    jumps: [{ edge: 0.5, x0: -0.5, x1: 0.5, dir: [0, -1], angle: 0.45, rampLen: 0.4 }],
+    slopes: [{ kind: 'tilt', poly: rect(-0.5, 0.9, 0.5, 0.5), a: [0, 1.2] }],   // up the ramp
+    pits: [rect(-0.5, 0.5, 0.5, -0.1)],
+    // A low lip on the landing side: a flying ball sails over it, but a ball
+    // that bounces back off the end wall can't roll back into the pit.
+    walls: [[-0.5, -0.1, 0.5, -0.1]],
+  },
+  {
+    name: 'Spinner', par: 3,
+    tee: [0, 2.0], cup: [0, -1.9],
+    outline: rect(-0.8, 2.4, 0.8, -2.4),
+    spinners: [{ x: 0, z: 0, len: 0.5, speed: 1.4 }],   // time it, or sneak round the side
+  },
+  {
+    name: 'Pipe Dream', par: 3,
+    tee: [0, 2.0], cup: [0.45, -2.0],
+    outline: rect(-0.9, 2.4, 0.9, -2.4),
+    walls: [[-0.9, 0, 0.9, 0]],
+    // Left pipe: out near the cup. Right pipe: back to the start (sorry).
+    pipes: [{ in: [-0.6, 0.12], out: [0.45, -1.35], dir: [0, -1] }, { in: [0.6, 0.12], out: [-0.6, 2.1], dir: [0, -1] }],
+  },
+  {
+    name: 'Island', par: 3,
+    tee: [0, 2.0], cup: [0.4, -1.9],
+    outline: rect(-1.0, 2.4, 1.0, -2.4),
+    water: [rect(-1.0, 0.9, -0.16, -1.2), rect(0.16, 0.9, 1.0, -1.2)],
+    // The bridge leans a little: aim slightly left.
+    slopes: [{ kind: 'tilt', poly: rect(-0.16, 0.9, 0.16, -1.2), a: [0.2, 0] }],
+  },
+];
+
+export const COURSES = {
+  classic: { id: 'classic', name: 'Classic', holes: HOLES },
+  trick: { id: 'trick', name: 'Trickshot', holes: TRICK },
+};
+
+export const coursePar = (holes = HOLES) => holes.reduce((n, h) => n + h.par, 0);
 
 // Every wall as a segment [ax, az, bx, bz]: the outline (closed) plus any
 // extra walls.

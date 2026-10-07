@@ -61,11 +61,122 @@ function hitSegment(b, ax, az, bx, bz, e) {
   return bounceOff(b, nx, nz, e);
 }
 
+// ---------------------------------------------- moving obstacles (Trickshot) --
+export function sliderAt(s, t) {
+  const mid = (s.x0 + s.x1) / 2, amp = (s.x1 - s.x0) / 2, w = 2 * Math.PI / s.period;
+  return { x: mid + amp * Math.sin(w * t + s.phase), vx: amp * w * Math.cos(w * t + s.phase) };
+}
+export const spinnerAngle = (s, t) => s.speed * t;
+const SLIDER_DEPTH = 0.08, SPINNER_THICK = 0.06;
+
+// A capsule (segment a-b, radius rr) moving with velocity velAt(qx, qz) at its
+// surface. Pushes the ball out and bounces it off, carrying the obstacle's speed.
+function hitMoving(b, ax, az, bx, bz, rr, velAt, e) {
+  const ex = bx - ax, ez = bz - az, l2 = ex * ex + ez * ez || 1e-9;
+  const u = Math.max(0, Math.min(1, ((b.x - ax) * ex + (b.z - az) * ez) / l2));
+  const qx = ax + ex * u, qz = az + ez * u;
+  const dx = b.x - qx, dz = b.z - qz, d = Math.hypot(dx, dz);
+  if (d >= R + rr || d < 1e-9) return false;
+  const nx = dx / d, nz = dz / d;
+  b.x = qx + nx * (R + rr); b.z = qz + nz * (R + rr);
+  const [ox, oz] = velAt(qx, qz);
+  let rx = b.vx - ox, rz = b.vz - oz;
+  const vn = rx * nx + rz * nz;
+  if (vn >= 0) return false;
+  rx -= (1 + e) * vn * nx; rz -= (1 + e) * vn * nz;
+  b.vx = rx + ox; b.vz = rz + oz;
+  b.moving = true;
+  return true;
+}
+
+// Sliders and spinners can knock even a ball that's sitting still.
+function hitObstacles(b, hole, t, events) {
+  const s0 = speedOf(b);
+  for (const s of hole.sliders ?? []) {
+    const { x, vx } = sliderAt(s, t), half = s.w / 2 - SLIDER_DEPTH / 2;
+    if (hitMoving(b, x - half, s.z, x + half, s.z, SLIDER_DEPTH / 2, () => [vx, 0], 0.6)) events?.push({ type: 'bumper', speed: Math.max(s0, Math.abs(vx)) });
+  }
+  for (const s of hole.spinners ?? []) {
+    const a = spinnerAngle(s, t), ux = Math.cos(a), uz = Math.sin(a);
+    const velAt = (qx, qz) => [-s.speed * (qz - s.z), s.speed * (qx - s.x)];
+    if (hitMoving(b, s.x - ux * s.len, s.z - uz * s.len, s.x + ux * s.len, s.z + uz * s.len, SPINNER_THICK / 2, velAt, 0.6)) events?.push({ type: 'bumper', speed: s0 + s.speed * 0.3 });
+  }
+}
+
+const G = 9.81;
+// The speed a ball needs to get right round a loop of radius r.
+export const loopSpeed = r => Math.sqrt(5 * G * r);
+// Where a ball is on a loop (entry point P, direction d, radius r) at angle phi.
+export function loopPoint(L, phi) {
+  const [dx, dz] = L.dir, sx = -dz, sz = dx;
+  const off = (phi / (2 * Math.PI)) * 0.06 - 0.03;   // a slight corkscrew so the way out passes beside the way in
+  return { x: L.x + dx * L.r * Math.sin(phi) + sx * off, y: L.r * (1 - Math.cos(phi)), z: L.z + dz * L.r * Math.sin(phi) + sz * off };
+}
+
+function hazard(b, kind, events) {
+  b.moving = false; b.hazard = kind; b.vx = b.vz = 0; b.y = 0;
+  events?.push({ type: 'hazard', kind });
+}
+const inAny = (x, z, polys) => (polys ?? []).some(p => pointInPoly(x, z, p));
+
+// The ball in the middle of a loop, a jump or a pipe: moves along its path
+// and comes out at the far end. Returns true while it's busy.
+function stepSpecial(b, hole, h, events) {
+  if (b.loop) {
+    const L = b.loop;
+    L.t += h;
+    const k = Math.min(1, L.t / L.dur);
+    const phi = L.pass ? k * 2 * Math.PI : L.phiMax * Math.sin(Math.PI * k);
+    const p = loopPoint(L.def, phi);
+    b.x = p.x; b.z = p.z; b.y = p.y;
+    if (k >= 1) {
+      const [dx, dz] = L.def.dir;
+      b.y = 0; b.loop = null;
+      if (L.pass) { b.x = L.def.x + dx * 0.16; b.z = L.def.z + dz * 0.16; b.vx = dx * L.v; b.vz = dz * L.v; }
+      else { b.x = L.def.x - dx * 0.02; b.z = L.def.z - dz * 0.02; b.vx = -dx * L.v; b.vz = -dz * L.v; }
+      events?.push({ type: 'loop', pass: L.pass });
+    }
+    return true;
+  }
+  if (b.air) {
+    const A = b.air;
+    A.t += h;
+    const k = Math.min(1, A.t / A.dur);
+    b.x = A.x0 + (A.x1 - A.x0) * k; b.z = A.z0 + (A.z1 - A.z0) * k; b.y = 4 * A.apex * k * (1 - k);
+    if (k >= 1) {
+      b.air = null; b.y = 0;
+      if (!pointInPoly(b.x, b.z, hole.outline) || inAny(b.x, b.z, hole.pits) || inAny(b.x, b.z, hole.water)) hazard(b, inAny(b.x, b.z, hole.water) ? 'water' : 'pit', events);
+      else { b.vx = A.vx; b.vz = A.vz; events?.push({ type: 'land', speed: Math.hypot(A.vx, A.vz) }); }
+    }
+    return true;
+  }
+  if (b.pipe) {
+    const Pp = b.pipe;
+    Pp.t += h;
+    if (Pp.t >= Pp.dur) {
+      b.pipe = null; b.hidden = false;
+      b.x = Pp.def.out[0]; b.z = Pp.def.out[1];
+      b.vx = Pp.def.dir[0] * Pp.speed; b.vz = Pp.def.dir[1] * Pp.speed;
+      events?.push({ type: 'pipeOut' });
+    }
+    return true;
+  }
+  return false;
+}
+
 // One substep. ph = prepareHole(hole); t = hole clock; events gets
-// { type: 'wall' | 'bumper' | 'cup' | 'lip' | 'stop', speed }.
+// { type: 'wall' | 'bumper' | 'cup' | 'lip' | 'stop' | 'loop' | 'jump' |
+//   'land' | 'pipe' | 'pipeOut' | 'hazard', ... }.
 export function golfStep(b, ph, h, t, events, rng = Math.random) {
-  if (b.sunk || !b.moving) return;
+  if (b.sunk || b.hazard) return;
   const hole = ph.hole;
+  if (!b.moving) {
+    // Only a moving obstacle can set a resting ball going.
+    if (hole.sliders || hole.spinners) hitObstacles(b, hole, t, events);
+    if (!b.moving) return;
+  }
+  if (stepSpecial(b, hole, h, events)) return;
+  const px = b.x, pz = b.z;
   const [ax, az] = slopeAccel(hole, b.x, b.z);
   b.vx += ax * h; b.vz += az * h;
   // Rolling friction: slows the ball without ever turning it round.
@@ -91,6 +202,58 @@ export function golfStep(b, ph, h, t, events, rng = Math.random) {
     // The blade sits just in front of the wall, across the gap.
     if (hitSegment(b, w.x - w.gap, w.z + 0.03, w.x + w.gap, w.z + 0.03, 0.5)) events?.push({ type: 'blade', speed: s });
   }
+  if (hole.sliders || hole.spinners) hitObstacles(b, hole, t, events);
+
+  // Loops: crossing the entry line inside the channel starts the ride.
+  for (const L of hole.loops ?? []) {
+    const [dx, dz] = L.dir;
+    const a0 = (px - L.x) * dx + (pz - L.z) * dz, a1 = (b.x - L.x) * dx + (b.z - L.z) * dz;
+    const lat = Math.abs((b.x - L.x) * -dz + (b.z - L.z) * dx);
+    const along = b.vx * dx + b.vz * dz;
+    if (a0 < 0 && a1 >= 0 && lat < L.half + R && along > 0) {
+      const need = loopSpeed(L.r);
+      if (along >= need) b.loop = { def: L, t: 0, dur: 2 * Math.PI * L.r / along * 1.3, pass: true, v: along * 0.8 };
+      else {
+        // Not enough: it climbs as far as it can and rolls back.
+        const hgt = along * along / (2 * G);
+        const phiMax = Math.min(Math.PI * 0.9, Math.acos(Math.max(-1, 1 - hgt / L.r)));
+        b.loop = { def: L, t: 0, dur: Math.max(0.35, 2 * phiMax * L.r / Math.max(along, 0.4)), pass: false, phiMax, v: along * 0.6 };
+      }
+      events?.push({ type: 'loopIn', pass: b.loop.pass });
+      return;
+    }
+  }
+  // Jumps: leaving the top of a ramp launches the ball.
+  for (const J of hole.jumps ?? []) {
+    const [dx, dz] = J.dir;
+    const a0 = px * dx + pz * dz, a1 = b.x * dx + b.z * dz, edgeA = J.edge * dz;
+    const along = b.vx * dx + b.vz * dz;
+    if (a0 < edgeA && a1 >= edgeA && b.x >= J.x0 && b.x <= J.x1 && along > 0.4) {
+      const c = Math.cos(J.angle), si = Math.sin(J.angle);
+      const tof = 2 * along * si / G, range = along * c * tof;
+      const lat = b.vx * -dz + b.vz * dx;            // sideways speed carries on through the air
+      b.air = {
+        t: 0, dur: tof, x0: b.x, z0: b.z,
+        x1: b.x + dx * range + -dz * lat * tof, z1: b.z + dz * range + dx * lat * tof,
+        apex: along * along * si * si / (2 * G),
+        vx: (dx * along * c - dz * lat) * 0.7, vz: (dz * along * c + dx * lat) * 0.7,
+      };
+      events?.push({ type: 'jump', speed: along });
+      return;
+    }
+  }
+  // Pipes: roll into a mouth and pop out somewhere else.
+  for (const pp of hole.pipes ?? []) {
+    if (Math.hypot(b.x - pp.in[0], b.z - pp.in[1]) < 0.075) {
+      b.pipe = { def: pp, t: 0, dur: 0.8, speed: Math.min(3, Math.max(0.7, s * 0.9)) };
+      b.hidden = true;
+      events?.push({ type: 'pipe' });
+      return;
+    }
+  }
+  // Water and pits: penalty.
+  if (inAny(b.x, b.z, hole.water)) return hazard(b, 'water', events);
+  if (inAny(b.x, b.z, hole.pits)) return hazard(b, 'pit', events);
 
   // The cup.
   const [cx, cz] = hole.cup;

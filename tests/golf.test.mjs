@@ -1,8 +1,8 @@
 // Headless tests for the mini golf course and ball physics.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { HOLES, wallsOf, pointInPoly, coursePar, CUP_R } from '../src/golf/course.js';
-import { makeGolfBall, prepareHole, putt, rollOut, golfStep, windmillBlocked, putterContact, slopeAccel, ROLL_DECEL, speedOf } from '../src/golf/physics.js';
+import { HOLES, TRICK, COURSES, wallsOf, pointInPoly, coursePar, CUP_R } from '../src/golf/course.js';
+import { makeGolfBall, prepareHole, putt, rollOut, golfStep, windmillBlocked, putterContact, slopeAccel, ROLL_DECEL, speedOf, loopSpeed, sliderAt } from '../src/golf/physics.js';
 import { rng32 } from './sim.mjs';
 
 test('every hole: tee and cup inside the walls, par 2-3', () => {
@@ -34,16 +34,17 @@ test('the right putt drops on the straight hole; a rocket lips out', () => {
   assert.ok(fast.events.some(e => e.type === 'lip'));
 });
 
-test('walls keep the ball on the green', () => {
+test('walls keep the ball on the green (both courses)', () => {
   const rng = rng32(3);
-  for (const h of HOLES) {
+  for (const h of [...HOLES, ...TRICK]) {
     const ph = prepareHole(h);
     for (let i = 0; i < 12; i++) {
       const b = makeGolfBall(h.tee[0], h.tee[1]);
       const a = rng() * Math.PI * 2;
-      putt(b, Math.cos(a), Math.sin(a), 1 + rng() * 4);
+      putt(b, Math.cos(a), Math.sin(a), 1 + rng() * 4.5);
       const r = rollOut(ph, b, { rng });
-      assert.ok(r.sunk || pointInPoly(r.x, r.z, h.outline), `${h.name}: ended at ${r.x.toFixed(2)},${r.z.toFixed(2)}`);
+      assert.ok(r.sunk || r.ball.hazard || pointInPoly(r.x, r.z, h.outline), `${h.name}: ended at ${r.x.toFixed(2)},${r.z.toFixed(2)}`);
+      assert.ok(!r.ball.moving || h.sliders || h.spinners, `${h.name}: still rolling after 15 s`);
     }
   }
 });
@@ -77,6 +78,63 @@ test('the windmill opens and shuts', () => {
   let open = 0, shut = 0;
   for (let t = 0; t < 10; t += 0.01) (windmillBlocked(w, t) ? shut++ : open++);
   assert.ok(shut > 200 && open > 400, `${shut} shut / ${open} open`);
+});
+
+const trick = name => prepareHole(TRICK.find(h => h.name === name));
+const from = (hole, speed, dx = 0, dz = -1) => { const b = makeGolfBall(hole.hole.tee[0], hole.hole.tee[1]); putt(b, dx, dz, speed); return b; };
+
+test('trickshot: every hole is sound and par 18', () => {
+  for (const h of TRICK) {
+    assert.ok(pointInPoly(h.tee[0], h.tee[1], h.outline), `${h.name} tee`);
+    assert.ok(pointInPoly(h.cup[0], h.cup[1], h.outline), `${h.name} cup`);
+  }
+  assert.equal(coursePar(TRICK), 18);
+  assert.equal(COURSES.trick.holes, TRICK);
+});
+
+test('trickshot: the loop needs pace; too slow rolls back', () => {
+  const ph = trick('Loop the Loop');
+  const need = loopSpeed(0.2);
+  // Pace to arrive at the loop with a bit to spare (1.75 m of green first).
+  const fast = rollOut(ph, from(ph, Math.sqrt((need + 0.4) ** 2 + 2 * ROLL_DECEL * 1.75)), { rng: rng32(1) });
+  assert.ok(fast.events.some(e => e.type === 'loop' && e.pass), 'made it round');
+  assert.ok(fast.z < 0.1 || fast.sunk);
+  const slow = rollOut(ph, from(ph, 2.4), { rng: rng32(1) });
+  assert.ok(slow.events.some(e => e.type === 'loop' && !e.pass), 'rolled back');
+  assert.ok(slow.z > 0.25);
+});
+
+test('trickshot: the jump clears the pit with pace and drops in short', () => {
+  const ph = trick('The Jump');
+  const big = rollOut(ph, from(ph, 4.2), { rng: rng32(2) });
+  assert.ok(big.events.some(e => e.type === 'jump'));
+  assert.ok(!big.events.some(e => e.type === 'hazard'), JSON.stringify(big.events.map(e => e.type)));
+  assert.ok(big.z < -0.1 || big.sunk);
+  const short = rollOut(ph, from(ph, 2.9), { rng: rng32(2) });
+  assert.ok(short.events.some(e => e.type === 'hazard') || short.z > 0.5, 'short: in the pit or back down the ramp');
+});
+
+test('trickshot: sliders and the spinner shove the ball; a resting ball gets knocked', () => {
+  const ph = trick('Spinner');
+  const b = makeGolfBall(0.3, 0);           // right in the spinner's path
+  let moved = false;
+  for (let t = 0; t < 3 && !moved; t += 0.002) { golfStep(b, ph, 0.002, t, null); moved = b.moving; }
+  assert.ok(moved, 'the spinner knocked a still ball');
+  const s = TRICK.find(h => h.name === 'Sliders').sliders[0];
+  const a = sliderAt(s, 0), c = sliderAt(s, s.period / 4);
+  assert.ok(Math.abs(c.x - a.x) > 0.3);
+});
+
+test('trickshot: the pipes teleport the ball, water costs a stroke', () => {
+  const pipes = trick('Pipe Dream');
+  const left = makeGolfBall(-0.6, 0.6); putt(left, 0, -1, 1.4);
+  const r = rollOut(pipes, left);
+  assert.ok(r.events.some(e => e.type === 'pipe') && r.events.some(e => e.type === 'pipeOut'));
+  assert.ok(r.z < 0 || r.sunk, `came out the far side: ${r.z}`);
+  const island = trick('Island');
+  const wet = makeGolfBall(0, 2.0); putt(wet, 0.35, -1, 3);
+  const w = rollOut(island, wet);
+  assert.ok(w.events.some(e => e.type === 'hazard' && e.kind === 'water'));
 });
 
 test('a putter swung through a still ball sends it the way the face points', () => {

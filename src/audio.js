@@ -140,6 +140,13 @@ export class Sfx {
         this._tone(out, 520, 0.12, 0.35, 'sine', 0, 300);
         for (let i = 0; i < 4; i++) this._tone(out, 1500 + i * 120, 0.03, 0.12, 'triangle', 0.08 + i * 0.07);
         break;
+      case 'splash':    // into the water
+        this._noise(out, 0.5, 0.4, 'lowpass', 900, 0.7, 0, 0.01);
+        for (let i = 0; i < 6; i++) this._tone(out, 300 + Math.random() * 500, 0.06, 0.08, 'sine', 0.15 + i * 0.06, 900 + Math.random() * 400);
+        break;
+      case 'whoosh':    // round a loop or off a ramp
+        this._noise(out, 0.45, 0.18, 'bandpass', 700, 0.6, 0, 0.15);
+        break;
       case 'fanfare':
         [523, 659, 784, 1047].forEach((f, i) => this._tone(out, f, i === 3 ? 0.6 : 0.16, 0.22, 'triangle', i * 0.13));
         break;

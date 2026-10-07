@@ -14,8 +14,12 @@ step. Live at https://doublehb.github.io/sportshall/
 - **Phones and tablets**: drag to move the paddle, Serve and Menu buttons, wider view when upright. Works for playing solo and for joining a friend.
 - **Friend**: host a game from the headset; a friend on a PC opens the same link, chooses "Join a friend's game" and types the 4-letter code. Peer-to-peer through PeerJS (free cloud matchmaker); the host runs the physics and the friend's browser only sends where their mouse points.
 
-**Mini golf** (the Mini Golf switch at the top of the menu): six holes on the hall
-floor (Warm Up, Dog Leg, Bumper Alley, The Hill, Windmill, The Bowl; par 15) for
+**Mini golf** (the Mini Golf switch at the top of the menu): two courses on the
+hall floor. Classic (Warm Up, Dog Leg, Bumper Alley, The Hill, Windmill, The Bowl;
+par 15) and Trickshot (Loop the Loop, Sliders, The Jump, Spinner, Pipe Dream,
+Island; par 18) with a vertical loop that needs pace, sliding blocks and a
+spinning bar that knock the ball, a ramp jump over a pit, pipes that teleport the
+ball, and water (a penalty stroke and replay from where you hit it). For
 1-4 players taking turns, with a scorecard, a 6-stroke limit and best rounds. In
 VR a putter hangs from your paddle hand's pointer and you swing it; the free
 hand's trigger takes you to your ball, side-on. On a screen, drag back from the
