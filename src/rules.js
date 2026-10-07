@@ -89,10 +89,10 @@ export class Referee {
           return null;
         case 'serveAny':
           if (own) { this.stage = 'serveOpp'; return null; }
-          return this._serveLanded();
+          return this._serveLanded(e);
         case 'serveOpp':
           if (own) return this._lose(H, 'The serve didn\'t clear the net');
-          return this._serveLanded();
+          return this._serveLanded(e);
         case 'toOpp':
           if (own) return this._lose(H, 'It bounced on your own side');
           this.stage = 'await';
@@ -113,10 +113,10 @@ export class Referee {
     return null;
   }
 
-  _serveLanded() {
+  _serveLanded(e) {
     if (this.netOnServe) { this.done = { let: true, reason: 'Let: it touched the net, serve again' }; return this.done; }
     this.stage = 'await';
-    this.info = { type: 'landed', hitter: this.hitter, serve: true };
+    this.info = { type: 'landed', hitter: this.hitter, serve: true, p: e?.p };
     return null;
   }
 

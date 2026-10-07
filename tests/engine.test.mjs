@@ -9,6 +9,7 @@ import { assistShot } from '../src/assist.js';
 import { simulateRally, rng32, simStats } from './sim.mjs';
 import { newCup, nextMatch, record, quickMatch, youAreOut, YOU, ROUND_GAMES } from '../src/cup.js';
 import { encodeFeel, decodeFeel } from '../src/share.js';
+import { lessonById, judgeHit, judgeShot, judgeServe, starsFor } from '../src/lessons.js';
 
 const T = TABLE;
 
@@ -273,6 +274,33 @@ test('share: paddle feel survives a link, and junk is refused', () => {
   assert.equal(decodeFeel('<script>'), null);
   assert.equal(decodeFeel('1_2_3'), null);
   assert.equal(decodeFeel('999_999_999_999_99_400').feel.bounce, 0.96);   // clamped
+});
+
+test('lessons: forehand/backhand side, spin checks and feedback', () => {
+  const fh = lessonById('forehand'), bh = lessonById('backhand'), top = lessonById('topspin'), push = lessonById('push');
+  const flat = { x: 0, y: 0, z: 0 };
+  assert.equal(judgeHit(fh, { contactX: 0.4, bodyX: 0, hand: 'right', w: flat }).problem, null);
+  assert.match(judgeHit(fh, { contactX: -0.3, bodyX: 0, hand: 'right', w: flat }).problem, /backhand/);
+  assert.equal(judgeHit(bh, { contactX: 0.3, bodyX: 0, hand: 'left', w: flat }).side, 'back');   // left-hander
+  const topHit = judgeHit(top, { contactX: 0.3, w: { x: -150, y: 0, z: 0 } });
+  assert.ok(topHit.topRpm > 1400 && topHit.problem === null);
+  assert.match(judgeHit(top, { contactX: 0.3, w: { x: -60, y: 0, z: 0 } }).problem, /Only \d+ rpm/);
+  assert.equal(judgeHit(push, { contactX: 0, w: { x: 60, y: 0, z: 0 } }).problem, null);
+  assert.equal(judgeShot(top, topHit, { landed: true }).good, true);
+  assert.match(judgeShot(fh, null, { missed: true }).text, /Missed the ball/);
+  assert.match(judgeShot(fh, { side: 'fore', problem: null }, { landed: false, reason: 'It bounced on your own side' }).text, /net/);
+  assert.equal(judgeServe({ landed: true }).good, true);
+  assert.match(judgeServe({ winner: 'O', reason: 'The serve must bounce on your side first' }).text, /DOWN/);
+  assert.deepEqual([10, 8, 5, 3, 2].map(n => starsFor(n)), [3, 3, 2, 1, 0]);
+});
+
+test('ball machine short feeds land just over the net', () => {
+  const m = new Machine({ pace: 'slow', spin: 'back', place: 'middle', depth: 'short', rng: rng32(4) });
+  for (let i = 0; i < 10; i++) {
+    const first = predict(m.feed().ball, { stopAt: ['table', 'net', 'floor'] }).events[0];
+    assert.equal(first.type, 'table');
+    assert.ok(first.p.z > 0.2 && first.p.z < 0.7, `z ${first.p.z}`);
+  }
 });
 
 test('robot v robot rallies (balance)', () => {

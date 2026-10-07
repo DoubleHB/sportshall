@@ -199,8 +199,9 @@ export const MACHINE = {
 };
 
 export class Machine {
-  constructor({ pace = 'medium', spin = 'none', place = 'mix', hand = 'right', rng = Math.random } = {}) {
-    Object.assign(this, { pace, spin, place, hand, rng });
+  // depth: 'short' (just over the net), 'long' (deep) or 'any'.
+  constructor({ pace = 'medium', spin = 'none', place = 'mix', hand = 'right', depth = 'any', rng = Math.random } = {}) {
+    Object.assign(this, { pace, spin, place, hand, depth, rng });
     this.mouth = { x: 0, y: TABLE.top + 0.32, z: -(TABLE.halfL + 0.2) };
   }
 
@@ -215,7 +216,8 @@ export class Machine {
       case 'middle': x = rand(rng, -0.15, 0.15); break;
       default: x = rand(rng, -0.6, 0.6);
     }
-    const z = rand(rng, 0.55, 1.15);
+    const [z0, z1] = { short: [0.3, 0.55], long: [0.85, 1.2] }[this.depth] ?? [0.55, 1.15];
+    const z = rand(rng, z0, z1);
     const pr = MACHINE.pace[this.pace] ?? MACHINE.pace.medium;
     const spinKey = this.spin === 'mix' ? ['none', 'top', 'back'][Math.floor(rng() * 3)] : this.spin;
     const sr = MACHINE.spin[spinKey] ?? MACHINE.spin.none;

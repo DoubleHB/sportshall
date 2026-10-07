@@ -16,13 +16,14 @@ import { buildWorld, makePaddle } from './world.js';
 import { CanvasBoard, Menu, C, FONT, roundRect } from './panel.js';
 import { Sfx } from './audio.js';
 import { RIVALS, QUICK, rivalById, talkLine, TALK_CHANCE, VOICE } from './rivals.js';
-import { createConfetti, createBubble, buildTrophy, buildHuman, FLIP } from './fx.js';
+import { createConfetti, createBubble, buildTrophy, buildHuman, createGhost, FLIP } from './fx.js';
 import { DeskPaddle, BladeTracker, DESK_Z } from './desk.js';
 import { hostGame, joinGame, cleanCode } from './net.js';
 import { newCup, nextMatch, record as cupRecordResult, quickMatch, youAreOut, involvesYou, YOU, ROUND_NAMES, ROUND_GAMES } from './cup.js';
 import { decodeFeel, feelLink } from './share.js';
+import { LESSONS, LESSON_BALLS, lessonById, judgeHit, judgeShot, judgeServe, starsFor } from './lessons.js';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -47,6 +48,7 @@ function applyFeel() {
 const stats = load('sh_stats', { wins: {}, losses: {}, bestStreak: 0, ladder: { beaten: [], champion: false }, cups: 0 });
 if (!stats.ladder) stats.ladder = { beaten: [], champion: false };
 stats.cups ??= 0;
+stats.lessons ??= {};     // best stars per lesson
 // The cup in progress (kept between visits).
 let cupSaved = null;
 try { cupSaved = JSON.parse(localStorage.getItem('sh_cup') || 'null'); } catch { /* none */ }
@@ -210,6 +212,7 @@ const hex = n => '#' + n.toString(16).padStart(6, '0');
 
 // ------------------------------------------------- characters and effects --
 const confetti = createConfetti(scene);
+const ghost = createGhost(scene, makePaddle);
 const bubble = createBubble(scene);
 const trophy = buildTrophy();
 trophy.root.position.set(1.75, 0, -0.9);
@@ -302,7 +305,21 @@ function drawScoreboard() {
   g.fillStyle = 'rgba(8,12,22,0.92)'; g.fill();
   g.lineWidth = 5; g.strokeStyle = '#2c3954'; g.stroke();
   g.textBaseline = 'middle';
-  if (G.mode === 'practice' && G.practice) {
+  if (G.mode === 'lesson' && G.lesson) {
+    const L = G.lesson;
+    g.fillStyle = C.accent; g.font = `800 44px ${FONT}`; g.textAlign = 'left';
+    g.fillText(`LESSON · ${L.def.name.toUpperCase()}`, 50, 68);
+    g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = `700 40px ${FONT}`;
+    g.fillText(L.done ? `Done: ${L.good} of ${LESSON_BALLS} good` : `${L.def.serve ? 'Serve' : 'Ball'} ${Math.min(L.n + 1, LESSON_BALLS)} of ${LESSON_BALLS}  ·  good ${L.good}`, 50, 140);
+    g.textAlign = 'right'; g.fillStyle = '#d4af37'; g.font = `800 44px ${FONT}`;
+    const st = starsFor(L.good);
+    g.fillText('★'.repeat(st) + '☆'.repeat(3 - st), w - 50, 140);
+    g.textAlign = 'left'; g.font = `600 38px ${FONT}`;
+    g.fillStyle = L.tipGood === true ? '#7dffa8' : L.tipGood === false ? '#ffb4a8' : '#dfe8ff';
+    wrapText(g, L.tip, w - 100).slice(0, 5).forEach((line, i) => g.fillText(line, 50, 215 + i * 50));
+    g.fillStyle = C.dim; g.font = `500 28px ${FONT}`;
+    g.fillText(G.inXR ? 'Free hand trigger: show the stroke again' : 'D: show the stroke again', 50, h - 34);
+  } else if (G.mode === 'practice' && G.practice) {
     const p = G.practice;
     g.fillStyle = C.accent; g.font = `800 50px ${FONT}`; g.textAlign = 'left';
     g.fillText('PRACTICE', 50, 70);
@@ -359,7 +376,7 @@ function renderMenu(ui) {
   if (honours) ui.text(honours, w - 60, 120, { size: 36, weight: 800, color: '#d4af37', align: 'right' });
   const tabs = [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
   const tw = (w - 120 - 5 * 14) / 6;
-  const parentTab = { watch: 'match', feel: 'settings', share: 'settings' }[G.tab] ?? G.tab;
+  const parentTab = { watch: 'match', feel: 'settings', share: 'settings', lessons: 'practice' }[G.tab] ?? G.tab;
   tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 60 + i * (tw + 14), 160, tw, 78, label, { selected: parentTab === id, size: 34 }));
   const L = 60, R = w - 60, width = R - L;
   const label = (s, y) => ui.text(s, L, y, { size: 32, weight: 650, color: C.dim });
@@ -428,6 +445,24 @@ function renderMenu(ui) {
       ui.button('resume', L, 810, width / 2 - 10, 110, 'Resume', { primary: true, size: 46 });
       ui.button('practice', L + width / 2 + 10, 810, width / 2 - 10, 110, 'Restart', { size: 40 });
     } else ui.button('practice', L, 810, width, 110, 'Start practice', { primary: true, size: 48 });
+    const earned = LESSONS.reduce((n, l) => n + (stats.lessons[l.id] ?? 0), 0);
+    ui.button('tab:lessons', L, 936, width, 72, `Stroke lessons: forehand, backhand, topspin, push, serve   ★ ${earned}/${LESSONS.length * 3}`, { size: 30 });
+  } else if (G.tab === 'lessons') {
+    dim('Learn the strokes one at a time. A ghost paddle shows you how, then the ball machine', 292);
+    dim(`feeds you ${LESSON_BALLS} balls and tells you what to fix. Up to three stars each.`, 332);
+    LESSONS.forEach((l, i) => {
+      const y = 360 + i * 104, best = stats.lessons[l.id] ?? 0, g = ui.g;
+      roundRect(g, L, y, width, 92, 22);
+      g.fillStyle = G.lesson?.def.id === l.id && G.mode === 'lesson' ? '#17284a' : '#1b2438'; g.fill();
+      ui.text(l.name, L + 30, y + 40, { size: 38, weight: 800 });
+      ui.text(l.blurb, L + 30, y + 76, { size: 26, weight: 500, color: C.dim });
+      ui.text('★'.repeat(best) + '☆'.repeat(3 - best), R - 290, y + 50, { size: 44, weight: 800, color: best ? '#d4af37' : '#55627e', align: 'right', base: 'middle' });
+      ui.button(`lesson:${l.id}`, R - 250, y + 12, 230, 68, best ? 'Again' : 'Start', { primary: !best, size: 32 });
+    });
+    if (G.mode === 'lesson') {
+      ui.button('resume', L, 900, width / 2 - 10, 90, 'Resume lesson', { primary: true, size: 38 });
+      ui.button('lesson:demo', L + width / 2 + 10, 900, width / 2 - 10, 90, 'Show me the stroke', { size: 36 });
+    } else ui.button('tab:practice', L, 920, 300, 70, '‹ Back', { size: 30 });
   } else if (G.tab === 'friend') {
     const n = G.net;
     dim('Play a friend on a PC or laptop. They open doublehb.github.io/sportshall', 292);
@@ -656,6 +691,8 @@ function onMenuClick(id) {
     else if (v === 'skipall') cupSkip(true);
   }
   else if (id === 'share:copy') copyShareLink();
+  else if (id === 'lesson:demo') { closeMenu(); showDemo(1); }
+  else if (k === 'lesson') startLesson(v);
   else if (id === 'feel:share') { G.tab = 'share'; G.shareNote = ''; loadQR(); }
   else if (k === 'feel') {
     if (v === 'reset') settings.feel = { ...FEEL };
@@ -707,7 +744,8 @@ function clearPlay() {
   G.streak = { who: null, n: 0 };
   W.setBall(null);
   targets.root.visible = false;
-  bubble.hide(); bubble2.hide();
+  bubble.hide(); bubble2.hide(); ghost.stop();
+  G.lesson = null; desk.style = 'drive';
   W.robot.root.visible = true; W.machine.root.visible = false;
   robot2.root.visible = false; desk.outer.visible = true;
   friendAvatar.root.visible = false; friendDesk.outer.visible = false;
@@ -913,6 +951,126 @@ function practiceResult(success, landing) {
   later(success ? 1.0 : 1.2, feed);
 }
 
+// -------------------------------------------------------------- lessons --
+// Where you're standing, for the ghost demo (table space x and z).
+function viewerSpot() {
+  if (G.inXR) { const p = renderer.xr.getCamera().getWorldPosition(new V3()); return { x: p.x, z: p.z }; }
+  return { x: 0, z: TB.halfL + 0.6 };
+}
+
+function showDemo(count = 1) {
+  if (!G.lesson) return;
+  const s = viewerSpot();
+  ghost.play(G.lesson.def.stroke, { dx: s.x, dz: s.z - (TB.halfL + 0.6), left: settings.hand === 'left', count });
+}
+
+function startLesson(id) {
+  const def = lessonById(id);
+  if (!def) return;
+  clearPlay();
+  G.mode = 'lesson';
+  G.lesson = { def, n: 0, good: 0, tip: def.how.join(' '), tipGood: null, hit: null, last: [] };
+  desk.style = { topspin: 'topspin', push: 'push' }[def.stroke] ?? 'drive';   // the screen paddle's swing
+  W.robot.root.visible = false;
+  W.machine.root.visible = !def.serve;
+  if (def.serve) { targets.root.visible = true; targets.list.forEach(placeTarget); }
+  closeMenu();
+  drawScoreboard();
+  showBanner(`Lesson: ${def.name}`, 'Watch the ghost paddle first', C.accent, 3);
+  showDemo(2);
+  later(5.2, nextLessonBall);
+}
+
+function nextLessonBall() {
+  const L = G.lesson;
+  if (G.mode !== 'lesson' || !L) return;
+  if (L.n >= LESSON_BALLS) return finishLesson();
+  L.hit = null; L.judged = false;
+  G.lastEventT = G.now;
+  if (L.def.serve) {
+    G.ref = new Referee(P, { casualServe: false });
+    holdBall(P);
+    showBanner(`Serve ${L.n + 1} of ${LESSON_BALLS}`, tossHint(), C.accent2, 2.2);
+  } else {
+    G.machine = new Machine({ ...L.def.feed, hand: settings.hand });
+    const f = G.machine.feed();
+    G.ball = f.ball;
+    G.ballState = 'live';
+    G.ref = new Referee(O, { casualServe: true });
+    G.ref.event({ type: 'hit', who: O, t: G.now });
+    W.machine.kick = 1;
+    sfx.play('machine', G.ball.p);
+  }
+  drawScoreboard();
+}
+
+// The referee's view of the ball, turned into a lesson verdict.
+function lessonAfterRef(res, info) {
+  const L = G.lesson;
+  if (!L || L.judged) return;
+  let verdict = null;
+  if (L.def.serve) {
+    if (res?.retoss) { G.ballState = 'dead'; later(0.5, () => { if (G.ref?.stage === 'toss') holdBall(P); }); return; }
+    if (info?.type === 'landed' && info.serve) {
+      verdict = judgeServe({ landed: true });
+      const hitT = info.p && targets.list.find(t => Math.hypot(t.g.position.x - info.p.x, t.g.position.z - info.p.z) < 0.17);
+      if (hitT) { hitT.flash = 1; sfx.play('target', info.p); later(0.5, () => placeTarget(hitT)); verdict.text += ' And it hit a target!'; }
+    } else if (res) verdict = judgeServe(res);
+  } else if (info?.type === 'landed' && info.hitter === P) {
+    verdict = judgeShot(L.def, L.hit, { landed: true });
+  } else if (res && !res.retoss) {
+    verdict = judgeShot(L.def, L.hit, { landed: false, reason: res.reason, missed: !L.hit });
+  }
+  if (verdict) lessonVerdict(verdict);
+}
+
+function lessonVerdict(v) {
+  const L = G.lesson;
+  L.judged = true;
+  G.ballState = 'dead';
+  L.tip = v.text; L.tipGood = v.retry ? null : v.good;
+  if (v.retry) { drawScoreboard(); later(1.4, nextLessonBall); return; }
+  L.n++;
+  if (v.good) L.good++;
+  L.last.push(v.good);
+  sfx.play(v.good ? 'win' : 'lose');
+  if (v.good) W.crowd.cheer(0.3);
+  showBanner(v.good ? 'Good!' : 'Not quite', `${L.good} good out of ${L.n}`, v.good ? C.good : C.bad, 1.4);
+  drawScoreboard();
+  // Two misses in a row: show the stroke again.
+  const twoBad = L.last.length >= 2 && !L.last[L.last.length - 1] && !L.last[L.last.length - 2];
+  if (twoBad && !ghost.playing) later(1.0, () => showDemo(1));
+  later(v.good ? 1.4 : twoBad ? 3.6 : 2.4, nextLessonBall);
+}
+
+function finishLesson() {
+  const L = G.lesson, id = L.def.id;
+  const stars = starsFor(L.good);
+  const best = Math.max(stars, stats.lessons[id] ?? 0);
+  const improved = stars > (stats.lessons[id] ?? 0);
+  stats.lessons[id] = best;
+  save('sh_stats', stats);
+  L.done = true;
+  L.tip = stars === 3 ? 'Brilliant! You\'ve got this stroke. Try the next lesson, or use it in a match.'
+    : stars ? 'Good progress. Have another go to earn more stars.' : 'Keep at it: watch the ghost paddle, then try again.';
+  L.tipGood = stars > 0;
+  drawScoreboard();
+  showBanner(`${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}  ${L.def.name}`, `${L.good} of ${LESSON_BALLS} good${improved ? ' · new best!' : ''}`, stars === 3 ? '#d4af37' : C.accent, 4);
+  if (stars === 3) { sound('fanfare'); burst(0.8); }
+  later(4.5, () => { G.mode = 'menu'; openMenu('lessons'); });
+}
+
+// Wrap text into lines that fit `width` on a canvas.
+function wrapText(g, text, width) {
+  const lines = []; let line = '';
+  for (const word of text.split(' ')) {
+    const t = line ? `${line} ${word}` : word;
+    if (g.measureText(t).width > width && line) { lines.push(line); line = word; } else line = t;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
 // --------------------------------------------------------------- rally --
 // A paddle hit by you (P) or the friend you host (O).
 function onPaddleHit(who, hit, tracker) {
@@ -924,12 +1082,19 @@ function onPaddleHit(who, hit, tracker) {
   const serving = G.ref.stage === 'toss';
   const assist = who === P ? settings.assist : (G.net?.friend?.assist ?? 'light');
   // Casual serves get full help whenever assist is on: serving is the fiddly bit.
-  const a = serving && assist !== 'off' ? 1 : ASSIST[assist];
+  let a = serving && assist !== 'off' ? 1 : ASSIST[assist];
+  // Lessons are a real test: no more than Light assist, and none on serves.
+  if (G.mode === 'lesson') a = G.lesson?.def.serve ? 0 : Math.min(ASSIST[assist], ASSIST.light);
   if (who === P) G.lastHitInfo = { p: { ...G.ball.p }, v: { ...G.ball.v }, w: { ...G.ball.w }, padVel: tracker.vel, n: toP(tracker.n) };
   let assisted = false;
   if (a && !(serving && settings.serve === 'proper')) {
     const v = assistShot(G.ball, a, who === P ? 1 : -1);
     if (v) { G.ball.v = v; assisted = true; }
+  }
+  // The screen paddle's stroke styles add the spin a wrist brush would (see desk.js).
+  if (who === P && !G.inXR && G.desk && desk.S.spin && G.ref.stage !== 'toss') G.ball.w.x += desk.S.spin;
+  if (who === P && G.mode === 'lesson' && G.lesson && !G.lesson.def.serve && !G.lesson.hit) {
+    G.lesson.hit = judgeHit(G.lesson.def, { contactX: G.ball.p.x, bodyX: viewerSpot().x, hand: settings.hand, w: G.ball.w });
   }
   if (who === P) {
     G.hitLog.push({ pad: PH.len(tracker.vel) * tracker.power, out: PH.len(G.ball.v), rpm: Math.round(PH.len(G.ball.w) * 60 / (2 * Math.PI)), assisted, result: null });
@@ -969,6 +1134,7 @@ function afterRef(res) {
     if (info?.type === 'landed' && info.hitter === P) last.result = 'landed';
     else if (res?.loser === P) last.result = res.reason.toLowerCase();
   }
+  if (G.mode === 'lesson') return lessonAfterRef(res, info);
   if (G.mode === 'practice') {
     if (info?.type === 'landed' && info.hitter === P) return practiceResult(true, info.p);
     if (res && !res.retoss) return practiceResult(res.winner === P, null);
@@ -1427,7 +1593,10 @@ function onSelect(c) {
     if (uv) menu.click(uv);
     return;
   }
-  if (c === offCtrl()) toss(P);
+  if (c !== offCtrl()) return;
+  // In a lesson, the free hand's trigger replays the stroke (unless you're holding a ball to serve).
+  if (G.mode === 'lesson' && G.ballState !== 'held') showDemo(1);
+  else toss(P);
 }
 
 function pointAt(c) {
@@ -1532,6 +1701,7 @@ window.addEventListener('keydown', e => {
   }
   if (e.code === 'Escape' || e.code === 'KeyM') toggleMenu();
   else if (e.code === 'Space') { e.preventDefault(); toss(P); }
+  else if (e.code === 'KeyD' && G.mode === 'lesson') showDemo(1);
 });
 
 function deskUpdate(dt) {
@@ -1545,8 +1715,11 @@ function deskUpdate(dt) {
   const b = G.ball;
   // Test hook (__sh.autoplay = true): the paddle plays by itself.
   if (G.autoplay && G.ballState === 'held' && G.holder === P && !G.paused) toss(P);
-  if (G.autoplay && b && G.ballState === 'live' && G.ref?.due === P) desk.plan(b, `${G.ref.hits}:${G.log.length}:${G.practice?.balls}`);
-  desk.update(dt, { ball: b, inPlay: !G.paused && (G.ballState === 'live' || G.ballState === 'toss'), due: G.ref?.due === P, tossed: G.ballState === 'toss' });
+  if (G.autoplay && b && G.ballState === 'live' && G.ref?.due === P) desk.plan(b, `${G.ref.hits}:${G.lastEventT.toFixed(3)}`);
+  desk.update(dt, {
+    ball: b, inPlay: !G.paused && (G.ballState === 'live' || G.ballState === 'toss'), due: G.ref?.due === P, tossed: G.ballState === 'toss',
+    properServe: G.ref ? !G.ref.casualServe : false,
+  });
 }
 
 // ---------------------------------------------------------------- frame --
@@ -1591,6 +1764,7 @@ function onFrame(t, frame, render = true) {
   W.crowd.update(dt);
   confetti.update(dt);
   trophy.update(dt);
+  ghost.update(dt);
   if (W.machine.kick > 0) { W.machine.kick = Math.max(0, W.machine.kick - dt * 6); W.machine.tube.position.z = -(TB.halfL + 0.2) - W.machine.kick * 0.03; }
   for (const tg of targets.list) {
     tg.flash = Math.max(0, tg.flash - dt * 2);

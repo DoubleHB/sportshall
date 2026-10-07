@@ -207,5 +207,106 @@ export function buildHuman({ shirt = 0x2a9df4, skin = 0xf1c6a7, hair = 0x3b2a1e,
   };
 }
 
+// ---------------------------------------------------- stroke demonstrator --
+// Key poses for each stroke, for a right-hander standing at (0, z 1.97): the
+// blade centre p, the face normal n and the direction the blade points (up).
+const K = (p, n, up) => ({ p: new THREE.Vector3(...p), n: new THREE.Vector3(...n).normalize(), up: new THREE.Vector3(...up).normalize() });
+export const STROKES = {
+  forehand: [K([0.55, 0.9, 2.0], [-0.25, 0.1, -1], [0.45, 0.85, 0.25]), K([0.4, 1.0, 1.68], [0, 0, -1], [0.3, 0.95, 0]), K([0.08, 1.25, 1.42], [0.35, -0.15, -1], [-0.1, 0.95, -0.35])],
+  backhand: [K([0.0, 0.95, 1.78], [0.3, 0.1, -1], [-0.95, 0.3, 0]), K([-0.18, 1.0, 1.6], [0, 0, -1], [-0.8, 0.55, -0.1]), K([-0.4, 1.12, 1.42], [-0.35, 0, -1], [-0.6, 0.75, -0.25])],
+  topspin: [K([0.55, 0.72, 1.95], [0, -0.4, -1], [0.45, 0.85, 0.25]), K([0.42, 0.98, 1.68], [0.05, -0.35, -1], [0.25, 0.95, 0]), K([0.15, 1.45, 1.5], [0.3, -0.5, -1], [-0.1, 0.95, -0.3])],
+  push: [K([0.1, 1.02, 1.72], [0, 0.85, -0.55], [0.2, 0.55, -0.8]), K([0.06, 0.97, 1.52], [0, 0.85, -0.55], [0.2, 0.55, -0.8]), K([0.03, 0.92, 1.32], [0, 0.8, -0.6], [0.2, 0.6, -0.8])],
+  serve: [K([0.32, 1.08, 1.88], [0, -0.35, -1], [0.5, 0.8, 0.2]), K([0.15, 0.95, 1.75], [0, -0.45, -1], [0.35, 0.9, 0]), K([-0.02, 0.9, 1.55], [0.1, -0.5, -1], [0.2, 0.95, -0.2])],
+};
+
+export function createGhost(scene, makePaddleFn) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0x7fe9ff, transparent: true, opacity: 0.5, depthWrite: false });
+  const pad = makePaddleFn();
+  pad.group.traverse(o => { if (o.isMesh) o.material = mat; });
+  pad.group.visible = false;
+  scene.add(pad.group);
+  const ballMat = new THREE.MeshBasicMaterial({ color: 0xffc27a, transparent: true, opacity: 0.7, depthWrite: false });
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.02, 16, 12), ballMat);
+  ball.visible = false;
+  scene.add(ball);
+  const N = 40;
+  const trailGeo = new THREE.BufferGeometry().setFromPoints(new Array(N).fill(0).map(() => new THREE.Vector3()));
+  const trailMat = new THREE.LineDashedMaterial({ color: 0x7fe9ff, dashSize: 0.03, gapSize: 0.025, transparent: true, opacity: 0.8 });
+  const trail = new THREE.Line(trailGeo, trailMat);
+  trail.visible = false; trail.frustumCulled = false;
+  scene.add(trail);
+
+  const LEAD = 0.9, SWING = 0.5, FOLLOW = 0.6, FADE = 0.4, CYCLE = LEAD + SWING + FOLLOW + FADE;
+  let keys = null, curve = null, stroke = null, t = 0, loops = 0;
+  const m = new THREE.Matrix4(), X = new THREE.Vector3(), Y = new THREE.Vector3(), Z = new THREE.Vector3(), n = new THREE.Vector3(), up = new THREE.Vector3();
+  const C = new THREE.Vector3(), tmp = new THREE.Vector3();
+
+  function poseAt(u) {
+    const p = curve.getPoint(u);
+    const [a, b, f] = u < 0.5 ? [keys[0], keys[1], u * 2] : [keys[1], keys[2], (u - 0.5) * 2];
+    n.lerpVectors(a.n, b.n, f).normalize();
+    up.lerpVectors(a.up, b.up, f);
+    up.addScaledVector(n, -up.dot(n)).normalize();
+    X.copy(n); Z.copy(up).negate(); Y.crossVectors(Z, X);
+    m.makeBasis(X, Y, Z);
+    pad.group.quaternion.setFromRotationMatrix(m);
+    pad.group.position.copy(p).addScaledVector(up, -0.13);
+  }
+
+  return {
+    get playing() { return loops > 0; },
+    // Play a stroke `count` times, shifted to where you stand (dx, dz) and
+    // mirrored for a left-hander.
+    play(name, { dx = 0, dz = 0, left = false, count = 2 } = {}) {
+      const s = left ? -1 : 1;
+      stroke = name;
+      keys = STROKES[name].map(k => ({
+        p: new THREE.Vector3(k.p.x * s + dx, k.p.y, k.p.z + dz),
+        n: new THREE.Vector3(k.n.x * s, k.n.y, k.n.z),
+        up: new THREE.Vector3(k.up.x * s, k.up.y, k.up.z),
+      }));
+      curve = new THREE.CatmullRomCurve3(keys.map(k => k.p));
+      C.copy(keys[1].p).addScaledVector(keys[1].n, 0.03);
+      const pts = curve.getPoints(N - 1);
+      trailGeo.setFromPoints(pts);
+      trail.computeLineDistances();
+      t = 0; loops = count;
+    },
+    stop() { loops = 0; pad.group.visible = ball.visible = trail.visible = false; },
+    update(dt) {
+      if (loops <= 0) return;
+      t += dt;
+      if (t >= CYCLE) { t -= CYCLE; loops--; if (loops <= 0) { this.stop(); return; } }
+      pad.group.visible = ball.visible = trail.visible = true;
+      const fade = t < 0.25 ? t / 0.25 : t > CYCLE - FADE ? Math.max(0, (CYCLE - t) / FADE) : 1;
+      mat.opacity = 0.5 * fade; ballMat.opacity = 0.75 * fade; trailMat.opacity = 0.8 * fade;
+      const u = Math.min(1, Math.max(0, (t - LEAD) / SWING));
+      poseAt(u);
+      // The ghost ball reaches the paddle at the middle of the swing.
+      const hitT = LEAD + SWING / 2;
+      if (stroke === 'serve') {
+        if (t < hitT) {             // tossed up from the hand, falling back to the paddle
+          const k = t / hitT, h = 0.32 * Math.sin(Math.PI * Math.min(1, k * 1.15));
+          ball.position.set(C.x - 0.04, 0.86 + (C.y - 0.86) * k + h, C.z + 0.02);
+        } else {                    // down onto your own half, then away
+          const k = Math.min(1, (t - hitT) / 0.6);
+          ball.position.set(C.x - 0.08 * k, C.y + (0.78 - C.y) * k, C.z - 0.75 * k);
+        }
+      } else {
+        const inFrom = tmp.set(C.x * 0.6, C.y + (stroke === 'push' ? 0.12 : 0.28), C.z - (stroke === 'push' ? 0.9 : 1.4));
+        if (t < hitT) {
+          const k = Math.max(0, 1 - (hitT - t) / 0.55);
+          ball.position.lerpVectors(inFrom, C, k);
+          ball.position.y += Math.sin(Math.PI * k) * 0.08;
+          ball.visible = k > 0;
+        } else {
+          const k = Math.min(1, (t - hitT) / 0.6);
+          ball.position.set(C.x * (1 - 0.6 * k), C.y + Math.sin(Math.PI * k) * 0.25, C.z - 1.9 * k);
+        }
+      }
+    },
+  };
+}
+
 export const FLIP = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
 export { TABLE };
