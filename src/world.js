@@ -346,7 +346,8 @@ function buildHall() {
   floor.rotation.x = -Math.PI / 2;
   g.add(floor);
   const outer = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x1a2030, roughness: 0.95 }));
-  outer.rotation.x = -Math.PI / 2; outer.position.y = -0.005;
+  // Well below the court, so the two can never fight in the depth buffer.
+  outer.rotation.x = -Math.PI / 2; outer.position.y = -0.08;
   g.add(outer);
 
   // Pool of light on the court.
@@ -375,8 +376,10 @@ function buildHall() {
   addBoard(10, -4.6, 0, Math.PI / 2); addBoard(10, 4.6, 0, -Math.PI / 2);
 
   // Walls and ceiling lights.
-  const walls = new THREE.Mesh(new THREE.BoxGeometry(24, 9, 24), new THREE.MeshStandardMaterial({ color: 0x141a28, roughness: 1, side: THREE.BackSide }));
-  walls.position.y = 4.5;
+  // The box's bottom face sits 20 cm under the floor: level with it, the two
+  // fought and striped the court.
+  const walls = new THREE.Mesh(new THREE.BoxGeometry(24, 9.2, 24), new THREE.MeshStandardMaterial({ color: 0x141a28, roughness: 1, side: THREE.BackSide }));
+  walls.position.y = 4.4;
   g.add(walls);
   const lamp = new THREE.MeshBasicMaterial({ color: 0xfff6e0 });
   for (const x of [-3, 0, 3]) for (const z of [-4, 0, 4]) {

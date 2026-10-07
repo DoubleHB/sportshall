@@ -97,7 +97,8 @@ export function createBubble(scene) {
       board.mesh.visible = true;
       board.mesh.material.opacity = 1;
     },
-    hide() { left = 0; },
+    // At once: a bubble that stops being updated (its robot leaves) would hang there.
+    hide() { left = 0; board.mesh.visible = false; },
     // anchor: where the bubble sits (above the robot's head); camQuat: face the viewer.
     update(dt, anchor, camQuat) {
       if (!board.mesh.visible) return;

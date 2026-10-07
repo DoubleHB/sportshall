@@ -122,8 +122,9 @@ export function createDarts(ctx) {
     grd.addColorStop(0, '#24325a'); grd.addColorStop(1, '#0b1020');
     g.fillStyle = grd; g.fillRect(0, 0, w, h);
     g.fillStyle = '#ff7a1a'; g.fillRect(0, h - 26, w, 10); g.fillRect(0, h - 10, w, 4);
-    g.fillStyle = 'rgba(255,255,255,0.9)'; g.font = `900 84px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('SPORTS HALL DARTS', w / 2, 66);
+    // Right at the top, so the VR banner (just above the cabinet) doesn't cover it.
+    g.fillStyle = 'rgba(255,255,255,0.9)'; g.font = `900 70px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('SPORTS HALL DARTS', w / 2, 48);
   });
   const wall = new THREE.Mesh(new THREE.PlaneGeometry(WALL.halfW * 2, WALL.top), new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.95 }));
   wall.position.set(0, WALL.top / 2, WALL.z);
@@ -950,8 +951,10 @@ export function createDarts(ctx) {
       card.mesh.scale.setScalar(1);
       card.mesh.position.set(1.48, 1.62, BOARD.z + 0.55);     // clear of the open cabinet door
       card.mesh.rotation.set(0, -0.45, 0);
-      bm.scale.setScalar(1);
-      bm.position.set(0, 2.45, BOARD.z + 0.12);
+      // Between the cabinet and the wall sign; its bottom edge stays above
+      // your sight line to the top of the board.
+      bm.scale.setScalar(0.9);
+      bm.position.set(0, 2.2, BOARD.z + 0.12);
       bm.rotation.set(0, 0, 0);
       return;
     }

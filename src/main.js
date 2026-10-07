@@ -28,7 +28,7 @@ import { createDarts, DARTS_VIEW } from './darts/game.js';
 import { DART_AVG } from './darts/robots.js';
 import { simulateMatch, ROUND_LEGS, CUP_START } from './darts/cup.js';
 
-export const VERSION = '0.11.0';
+export const VERSION = '0.11.1';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -82,7 +82,9 @@ document.getElementById('stage').appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const BG = new THREE.Color(0x0e1320);
 scene.background = BG;
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.02, 80);
+// Near plane 5 cm (not 2) for more depth precision: the floor markings sit
+// millimetres above the floor.
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.05, 60);
 const DESK_CAM = { p: new V3(0, 1.58, 2.55), look: new V3(0, 0.82, -0.7) };
 function resetDeskCamera() {
   if (G.mode === 'golf' && golf?.active) { golf.snapCamera(); return; }   // golf has its own camera
@@ -213,9 +215,12 @@ scene.add(friendDesk.outer);
 function attachHands() {
   const pc = paddleCtrl();
   // Mini golf in VR: a putter hangs from the paddle hand's pointer instead.
-  const putting = !!golf && G.mode === 'golf' && G.inXR && !!pc;
+  // (Whether the game is running, not G.mode: clearPlay calls this after
+  // stopping golf or darts but before the mode changes, and the paddle has to
+  // come back.)
+  const putting = !!golf?.active && G.inXR && !!pc;
   // Darts in VR: a dart sticks out of the front of the paddle hand's controller.
-  const darting = !!darts && G.mode === 'darts' && G.inXR && !!pc;
+  const darting = !!darts?.active && G.inXR && !!pc;
   golf?.putterRig.removeFromParent();
   darts?.handRig.removeFromParent();
   if (putting) { paddleRig.removeFromParent(); pc.ray.add(golf.putterRig); }
@@ -291,7 +296,10 @@ darts = createDarts({
 });
 const bubble = createBubble(scene);
 const trophy = buildTrophy();
-trophy.root.position.set(1.75, 0, -0.9);
+// Out to the right: clear of every golf hole (the Dog Leg runs out to x 2.2),
+// the table, the darts stage, and not behind a scoreboard from your end, the
+// oche or the courtside seats.
+trophy.root.position.set(3.3, 0, -1.6);
 trophy.root.visible = !!stats.ladder.champion || stats.cups > 0 || stats.darts.cups > 0;
 scene.add(trophy.root);
 // The friend you host, at the far end, and the host as seen by a guest.
@@ -354,6 +362,17 @@ banner.mesh.material.opacity = 0;
 scene.add(scoreboard.mesh, banner.mesh);
 // Boards face whoever is watching this screen (the guest looks from the far end).
 function placeBoards() {
+  // Watching from the courtside seat: both across the table, facing the seat.
+  if (G.mode === 'exhibition') {
+    scoreboard.mesh.position.set(-1.7, 1.75, 0);
+    scoreboard.mesh.rotation.set(0, Math.PI / 2, 0);
+    scoreboard.mesh.scale.setScalar(1.3);
+    banner.mesh.position.set(-1.7, 2.62, 0);
+    banner.mesh.rotation.set(0, Math.PI / 2, 0);
+    banner.mesh.scale.setScalar(1.3);
+    return;
+  }
+  scoreboard.mesh.scale.setScalar(1); banner.mesh.scale.setScalar(1);
   const s = G.role === 'guest' ? -1 : 1;
   scoreboard.mesh.position.set(-1.75 * s, 1.55, -0.9 * s);
   scoreboard.mesh.rotation.set(0, 0.56 + (s < 0 ? Math.PI : 0), 0);
@@ -370,9 +389,15 @@ function showBanner(title, sub = '', color = C.accent2, secs = 2.6) {
   g.fillStyle = 'rgba(10,14,26,0.86)'; g.fill();
   g.lineWidth = 6; g.strokeStyle = color; g.stroke();
   g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillStyle = '#fff'; g.font = `800 ${sub ? 92 : 110}px ${FONT}`;
+  // Long lines shrink to fit inside the rounded edge rather than run off it.
+  const fit = (text, weight, size) => {
+    g.font = `${weight} ${size}px ${FONT}`;
+    const over = g.measureText(text).width / (w - 110);
+    if (over > 1) g.font = `${weight} ${Math.floor(size / over)}px ${FONT}`;
+  };
+  g.fillStyle = '#fff'; fit(title, 800, sub ? 92 : 110);
   g.fillText(title, w / 2, sub ? h / 2 - 40 : h / 2);
-  if (sub) { g.fillStyle = '#c9d6f2'; g.font = `500 ${sub.length > 34 ? 46 : 56}px ${FONT}`; g.fillText(sub, w / 2, h / 2 + 62); }
+  if (sub) { g.fillStyle = '#c9d6f2'; fit(sub, 500, sub.length > 34 ? 46 : 56); g.fillText(sub, w / 2, h / 2 + 62); }
   banner.flush();
   bannerLeft = secs;
 }
@@ -1042,6 +1067,7 @@ function clearPlay() {
   }
   W.table.visible = true; scoreboard.mesh.visible = true;
   setView(null);
+  if (G.mode === 'exhibition') { G.mode = 'menu'; placeBoards(); }   // the boards come back from the courtside spots
   serveButton(true);
 }
 // The touch screen's Serve button is only for table tennis.
@@ -1150,6 +1176,7 @@ function startExhibition({ near = settings.exNear, far = settings.exFar, games =
   desk.outer.visible = false;
   G.match = new Match({ games, firstServer: Math.random() < 0.5 ? P : O });
   setView(COURTSIDE);
+  placeBoards();
   closeMenu();
   drawScoreboard();
   showBanner(`${G.rivalP.name} v ${G.rival.name}`, cupRef ? `Cup ${ROUND_NAMES[cupRef.r].toLowerCase()}` : 'Exhibition · sit back and enjoy it', C.accent, 3);
@@ -1168,7 +1195,7 @@ function startMatch({ rival = rivalById(QUICK[settings.level]), ladder = false, 
   G.match = new Match({ games: games ?? (ladder ? rival.games : settings.games), firstServer: Math.random() < 0.5 ? P : O });
   closeMenu();
   drawScoreboard();
-  showBanner(cupRef ? `Cup ${ROUND_NAMES[cupRef.r].toLowerCase()}: ${rival.name}` : ladder ? `Ladder: ${rival.name}` : `v ${rival.name}`, `${G.match.server === P ? 'You serve first' : `${rival.name} serves first`}${G.match.games > 1 ? ` · best of ${G.match.games}` : ''}`, hex(rival.look.accent), 2.4);
+  showBanner(cupRef ? `Cup ${ROUND_NAMES[cupRef.r].toLowerCase()}: ${rival.name}` : ladder ? `Ladder: ${rival.name}` : `You v ${rival.name}`, `${G.match.server === P ? 'You serve first' : `${rival.name} serves first`}${G.match.games > 1 ? ` · best of ${G.match.games}` : ''}`, hex(rival.look.accent), 2.4);
   later(0.9, () => robotSay('start', true));
   later(2.4, newPoint);
 }
@@ -2235,7 +2262,7 @@ function deskUpdate(dt) {
 // ---------------------------------------------------------------- frame --
 let lastT = 0;
 renderer.setAnimationLoop(onFrame);
-const _hp = new V3(), _cq = new THREE.Quaternion();
+const _hp = new V3(), _cp = new V3(), _cq = new THREE.Quaternion();
 function onFrame(t, frame, render = true) {
   const dt = Math.min(0.05, Math.max(0, (t - lastT) / 1000) || 1 / 60);
   lastT = t;
@@ -2300,9 +2327,18 @@ function onFrame(t, frame, render = true) {
   cam.getWorldQuaternion(_cq);
   // Push the bubble sideways relative to the viewer, so it clears the head.
   const side = new V3(0.62, 0.22, 0).applyQuaternion(_cq).setY(0.22);
+  // Bubbles are sized for a robot across the table; one standing beside you
+  // (darts) gets a smaller bubble, nearer its head, not one in your face.
+  cam.getWorldPosition(_cp);
+  const sayAt = (b, r) => {
+    r.headPos(_hp);
+    const k = Math.min(1, Math.max(0.3, _hp.distanceTo(_cp) / 3.4));
+    b.mesh.scale.setScalar(k);
+    b.update(dt, _hp.addScaledVector(side, k), _cq);
+  };
   const sp = speaker();
-  if (sp.root.visible) bubble.update(dt, sp.headPos(_hp).add(side), _cq);
-  if (robot2.root.visible && !darts.active) bubble2.update(dt, robot2.headPos(_hp).add(side), _cq);
+  if (sp.root.visible) sayAt(bubble, sp);
+  if (robot2.root.visible && !darts.active) sayAt(bubble2, robot2);
 
   if (!render) return;
   renderer.render(scene, camera);
