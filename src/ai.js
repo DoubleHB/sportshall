@@ -32,7 +32,12 @@ export class Bot {
     this.mood = 0;           // >0 happy, <0 sad, for the face
   }
 
-  setLevel(level) { this.levelKey = level; this.L = LEVELS[level] ?? LEVELS.medium; }
+  // A level, optionally tweaked by a character's style (see rivals.js):
+  // any LEVELS field, plus chop (chance of a backspin chop) and sideSpin.
+  setLevel(level, tweak = null) {
+    this.levelKey = level;
+    this.L = { chop: 0.18, sideSpin: 20, ...(LEVELS[level] ?? LEVELS.medium), ...(tweak || {}) };
+  }
 
   reset() { this.plan = null; this.pad = { ...this.home }; }
 
@@ -121,8 +126,8 @@ export class Bot {
     let pace = rand(rng, L.pace[0], L.pace[1]);
     const high = ball.p.y > T.top + 0.32;
     if (high && rng() < L.smash) pace = L.pace[1] * 1.2;
-    const chop = !high && rng() < 0.18;
-    let w = spinFor(dirZ, chop ? -rand(rng, 40, 120) : rand(rng, L.spin[0], L.spin[1]), gauss(rng) * 20);
+    const chop = !high && rng() < L.chop;
+    let w = spinFor(dirZ, chop ? -rand(rng, 40, 120) : rand(rng, L.spin[0], L.spin[1]), gauss(rng) * L.sideSpin);
     if (chop) pace *= 0.75;
 
     // Mistakes: more likely against fast incoming balls.

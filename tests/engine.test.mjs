@@ -212,6 +212,22 @@ test('light assist rescues a near miss but not a wild swing', () => {
   assert.ok(lands(wild, assistShot(wild, 1)));
 });
 
+test('assist works for the far end too (mirrored)', () => {
+  const long = makeBall({ x: -0.2, y: T.top + 0.3, z: -1.6 }, { x: 0.5, y: 1.5, z: 11 }, { x: 0, y: 0, z: 0 });
+  const v = assistShot(long, 1, -1);
+  const after = predict(makeBall(long.p, v, long.w), { stopAt: ['table', 'net', 'floor'] }).events[0];
+  assert.equal(after.type, 'table');
+  assert.equal(after.side, 1);
+});
+
+test('characters tweak the robot', () => {
+  const b = new Bot('medium');
+  b.setLevel('medium', { chop: 0.6, spin: [150, 300] });
+  assert.equal(b.L.chop, 0.6);
+  assert.deepEqual(b.L.spin, [150, 300]);
+  assert.equal(b.L.react, LEVELS.medium.react);
+});
+
 test('robot v robot rallies (balance)', () => {
   for (const level of Object.keys(LEVELS)) {
     const rng = rng32(11);

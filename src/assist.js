@@ -12,9 +12,22 @@ const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 // assist gives up on it.
 export const lightLimit = strength => 0.25 + 0.5 * strength;
 
-// ball: the ball just after your hit (you're at +z, so a shot goes towards -z).
+// Mirror table space end for end (z -> -z). Spin is an axial vector, so its x
+// and y flip instead.
+const mirrorBall = b => ({ p: { ...b.p, z: -b.p.z }, v: { ...b.v, z: -b.v.z }, w: { x: -b.w.x, y: -b.w.y, z: b.w.z } });
+
+// ball: the ball just after the hit. side: +1 if the hitter is at the +z end
+// (shooting towards -z), -1 for the far end.
 // Returns the corrected velocity, or null when no help is needed or wanted.
-export function assistShot(ball, strength) {
+export function assistShot(ball, strength, side = 1) {
+  if (side < 0) {
+    const v = assistNear(mirrorBall(ball), strength);
+    return v && { ...v, z: -v.z };
+  }
+  return assistNear(ball, strength);
+}
+
+function assistNear(ball, strength) {
   if (!(strength > 0)) return null;
   const v = ball.v, T = TABLE;
   if (v.z > -1.2) return null;                       // not really a shot at the table

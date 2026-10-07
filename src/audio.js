@@ -128,6 +128,36 @@ export class Sfx {
       case 'groan':
         this._noise(out, 1.0, 0.12, 'lowpass', 500, 0.6, 0, 0.2);
         break;
+      case 'fanfare':
+        [523, 659, 784, 1047].forEach((f, i) => this._tone(out, f, i === 3 ? 0.6 : 0.16, 0.22, 'triangle', i * 0.13));
+        break;
     }
+  }
+
+  // Robot chatter: a burst of blips, one per syllable-ish, at the robot's pitch.
+  babble(text, pos, pitch = 1) {
+    if (!this.enabled || !this.ctx || this.ctx.state !== 'running') return;
+    const out = this._out(pos);
+    const n = Math.min(14, Math.max(3, Math.round(text.length / 4)));
+    let at = 0;
+    for (let i = 0; i < n; i++) {
+      const f = (260 + Math.random() * 420) * pitch;
+      const d = 0.05 + Math.random() * 0.05;
+      this._tone(out, f, d, 0.09, i % 3 ? 'square' : 'triangle', at, f * (0.8 + Math.random() * 0.5));
+      at += d + 0.025;
+    }
+  }
+
+  // Real speech, if the browser has voices. Returns false if it couldn't.
+  speak(text, { pitch = 1, rate = 1 } = {}) {
+    const ss = window.speechSynthesis;
+    if (!this.enabled || !ss || !ss.getVoices().length) return false;
+    ss.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const en = ss.getVoices().filter(v => v.lang?.startsWith('en'));
+    u.voice = en.find(v => /GB|UK/.test(v.lang + v.name)) || en[0] || null;
+    u.pitch = pitch; u.rate = rate; u.volume = 0.9;
+    ss.speak(u);
+    return true;
   }
 }

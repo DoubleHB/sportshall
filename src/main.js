@@ -1,27 +1,38 @@
 // Sports Hall: table tennis for Meta Quest (WebXR), with a desktop preview.
 // The scene is laid out in table space (see physics.js); in VR an offset
 // reference space puts the table in front of you, so world = table space.
+//
+// Modes: menu, match (v a robot), practice (ball machine), versus (you host a
+// friend on a PC). A friend who joins runs this page as a "guest": the host
+// simulates everything and streams it; the guest only sends where their mouse
+// points (see the GUEST section).
 import * as THREE from 'three';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import * as PH from './physics.js';
-import { Referee, Match, P, O } from './rules.js';
+import { Referee, Match, P, O, other } from './rules.js';
 import { Bot, Machine, LEVELS } from './ai.js';
 import { assistShot } from './assist.js';
 import { buildWorld, makePaddle } from './world.js';
 import { CanvasBoard, Menu, C, FONT, roundRect } from './panel.js';
 import { Sfx } from './audio.js';
+import { RIVALS, QUICK, rivalById, talkLine, TALK_CHANCE, VOICE } from './rivals.js';
+import { createConfetti, createBubble, buildTrophy, buildHuman, FLIP } from './fx.js';
+import { DeskPaddle, BladeTracker, DESK_Z } from './desk.js';
+import { hostGame, joinGame, cleanCode } from './net.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
 // ------------------------------------------------------------- settings --
-const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix' };
+const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps' };
 const settings = load('sh_settings', DEFAULTS);
-const stats = load('sh_stats', { wins: {}, losses: {}, bestStreak: 0 });
+const stats = load('sh_stats', { wins: {}, losses: {}, bestStreak: 0, ladder: { beaten: [], champion: false } });
+if (!stats.ladder) stats.ladder = { beaten: [], champion: false };
 function load(key, def) { try { return { ...def, ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return { ...def }; } }
 function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 const ASSIST = { off: 0, light: 0.55, full: 1 };
+const HOST_NAME = 'Player 1';
 
 // ------------------------------------------------------------- renderer --
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -38,8 +49,11 @@ const BG = new THREE.Color(0x0e1320);
 scene.background = BG;
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.02, 80);
 const DESK_CAM = { p: new V3(0, 1.58, 2.55), look: new V3(0, 0.82, -0.7) };
-function resetDeskCamera() { camera.position.copy(DESK_CAM.p); camera.lookAt(DESK_CAM.look); }
-resetDeskCamera();
+function resetDeskCamera() {
+  const s = G.role === 'guest' ? -1 : 1;
+  camera.position.set(DESK_CAM.p.x, DESK_CAM.p.y, DESK_CAM.p.z * s);
+  camera.lookAt(DESK_CAM.look.x, DESK_CAM.look.y, DESK_CAM.look.z * s);
+}
 window.addEventListener('resize', () => {
   if (renderer.xr.isPresenting) return;
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -53,18 +67,23 @@ sfx.enabled = settings.sound;
 
 // ----------------------------------------------------------------- state --
 const G = {
-  mode: 'menu',          // menu | match | practice
+  role: 'solo',          // solo | host (a friend is connected) | guest
+  mode: 'menu',          // menu | match | practice | versus
   paused: true,          // menu open
   tab: 'match',
   now: 0,
   ball: null,
   ballState: 'none',     // none | held | toss | live | dead
+  holder: P,             // who is holding the ball to serve
   ref: null,
   match: null,
   bot: new Bot(settings.level),
+  rival: null,           // the robot character in a match
+  ladder: false,         // is this match a ladder challenge?
+  streak: { who: null, n: 0 },
   machine: null,
   timers: [],
-  lastPlayerHit: -9,
+  lastHit: { P: -9, O: -9 },
   lastEventT: 0,
   practice: null,
   lastResult: null,
@@ -73,7 +92,9 @@ const G = {
   inXR: false,
   mr: false,
   desk: false,
+  net: null,             // { link, code, friend: {name, assist} | null, error }
 };
+resetDeskCamera();
 
 function later(sec, fn) { G.timers.push({ t: G.now + sec, fn }); }
 function runTimers() {
@@ -83,6 +104,13 @@ function runTimers() {
   G.timers = G.timers.filter(t => t.t > G.now);
   due.forEach(t => t.fn());
 }
+
+// Sounds also go to a connected friend.
+function sound(kind, p = null, s = 1) {
+  sfx.play(kind, p, s);
+  if (G.role === 'host' && G.mode === 'versus') send({ t: 'sfx', k: kind, p: p && [p.x, p.y, p.z], s });
+}
+function send(msg) { G.net?.link?.send(msg); }
 
 // ------------------------------------------------------- paddle and hands --
 const paddle = makePaddle();
@@ -111,11 +139,15 @@ const ctrls = [0, 1].map(i => {
 const paddleCtrl = () => ctrls.find(c => c.hand === settings.hand) || null;
 const offCtrl = () => ctrls.find(c => c.hand && c.hand !== settings.hand) || null;
 
-// Desktop paddle: follows the mouse on a plane just behind your end of the table.
-const desk = { outer: new THREE.Group(), inner: new THREE.Group(), target: new V3(0.25, 1.0, 1.62), swing: -1, mouse: new THREE.Vector2() };
-desk.outer.add(desk.inner);
-desk.inner.rotation.x = Math.PI / 2;
+// Your paddle on a screen, and the friend's paddle at the far end.
+const desk = new DeskPaddle(1);
+desk.mouse = new THREE.Vector2();
 scene.add(desk.outer);
+const friendDesk = new DeskPaddle(-1);
+const friendPaddle = makePaddle({ fore: 0x1f7ae0 });
+friendDesk.inner.add(friendPaddle.group);
+friendDesk.outer.visible = false;
+scene.add(friendDesk.outer);
 
 function attachHands() {
   const pc = paddleCtrl();
@@ -131,40 +163,66 @@ function haptic(c, intensity, ms) {
   try { c?.source?.gamepad?.hapticActuators?.[0]?.pulse?.(Math.min(1, intensity), ms); } catch { /* not supported */ }
 }
 
-// The paddle's blade pose this frame and last frame, for swept collisions.
-const pose = { valid: false, c: new V3(), n: new V3(), q: new THREE.Quaternion(), pc: new V3(), pn: new V3(), pq: new THREE.Quaternion(), vel: PH.vec(), ang: PH.vec() };
-const dq = new THREE.Quaternion();
-function samplePaddle(dt) {
-  const holder = paddleRig.parent;
-  const ok = !!holder && (G.inXR ? holder.visible : G.desk);
-  if (!ok) { pose.valid = false; return; }
-  pose.pc.copy(pose.c); pose.pn.copy(pose.n); pose.pq.copy(pose.q);
-  paddle.centre.updateWorldMatrix(true, false);
-  paddle.centre.getWorldPosition(pose.c);
-  paddle.centre.getWorldQuaternion(pose.q);
-  pose.n.set(1, 0, 0).applyQuaternion(pose.q);
-  if (!pose.valid || dt <= 0) { pose.pc.copy(pose.c); pose.pn.copy(pose.n); pose.pq.copy(pose.q); }
-  pose.valid = true;
-  const k = 1 / Math.max(dt, 1e-3);
-  pose.vel = { x: (pose.c.x - pose.pc.x) * k, y: (pose.c.y - pose.pc.y) * k, z: (pose.c.z - pose.pc.z) * k };
-  dq.copy(pose.q).multiply(pose.pq.clone().invert());
-  if (dq.w < 0) { dq.x = -dq.x; dq.y = -dq.y; dq.z = -dq.z; dq.w = -dq.w; }
-  const angle = 2 * Math.acos(Math.min(1, dq.w));
-  const s = Math.sqrt(Math.max(1 - dq.w * dq.w, 1e-9));
-  pose.ang = angle < 1e-5 ? PH.vec() : { x: dq.x / s * angle * k, y: dq.y / s * angle * k, z: dq.z / s * angle * k };
-}
+// Blade poses frame to frame, for swept collisions.
+const pose = new BladeTracker();
+const friendPose = new BladeTracker();
 const toP = v => ({ x: v.x, y: v.y, z: v.z });
+
+// ------------------------------------------------- characters and effects --
+const confetti = createConfetti(scene);
+const bubble = createBubble(scene);
+const trophy = buildTrophy();
+trophy.root.position.set(1.75, 0, -0.9);
+trophy.root.visible = !!stats.ladder.champion;
+scene.add(trophy.root);
+// The friend you host, at the far end, and the host as seen by a guest.
+const friendAvatar = buildHuman({ shirt: 0xff7a1a, hair: 0x6b3a1e });
+friendAvatar.root.visible = false;
+scene.add(friendAvatar.root);
+const hostAvatar = buildHuman({ shirt: 0x2a9df4, headset: true });
+hostAvatar.root.visible = false;
+scene.add(hostAvatar.root);
+const hostPaddle = makePaddle();
+hostPaddle.group.visible = false;
+scene.add(hostPaddle.group);
+
+function setRival(r) {
+  G.rival = r;
+  W.robot.setLook(r.look);
+  G.bot.setLevel(r.level, r.tweak);
+}
+setRival(rivalById(QUICK[settings.level]));
+
+// The robot talks: a speech bubble, plus beeps or a voice.
+let lastTalk = -9;
+function robotSay(moment, force = false) {
+  if (G.mode !== 'match' || !G.rival || settings.talk === 'off') return;
+  if (!force && (Math.random() > (TALK_CHANCE[moment] ?? 0.5) || G.now - lastTalk < 3.5)) return;
+  const line = talkLine(G.rival, moment);
+  if (!line) return;
+  lastTalk = G.now;
+  bubble.say(line, '#' + G.rival.look.accent.toString(16).padStart(6, '0'));
+  const head = W.robot.headPos(new V3());
+  const voice = VOICE[G.rival.voice] ?? { pitch: 1, rate: 1 };
+  if (settings.talk === 'voice' && sfx.speak(line, voice)) return;
+  if (settings.talk === 'beeps' || settings.talk === 'voice') sfx.babble(line, head, voice.pitch * 0.6 + 0.5);
+}
 
 // --------------------------------------------------------- boards and menu --
 const scoreboard = new CanvasBoard(1.25, 0.62, 1000, 496, { transparent: true });
-scoreboard.mesh.position.set(-1.75, 1.55, -0.9);
-scoreboard.mesh.rotation.y = 0.56;
-scene.add(scoreboard.mesh);
-
 const banner = new CanvasBoard(1.5, 0.375, 1200, 300, { transparent: true });
-banner.mesh.position.set(0, 1.62, -1.6);
 banner.mesh.material.opacity = 0;
-scene.add(banner.mesh);
+scene.add(scoreboard.mesh, banner.mesh);
+// Boards face whoever is watching this screen (the guest looks from the far end).
+function placeBoards() {
+  const s = G.role === 'guest' ? -1 : 1;
+  scoreboard.mesh.position.set(-1.75 * s, 1.55, -0.9 * s);
+  scoreboard.mesh.rotation.set(0, 0.56 + (s < 0 ? Math.PI : 0), 0);
+  banner.mesh.position.set(0, 2.05, -1.75 * s);    // above the opponent's head
+  banner.mesh.rotation.set(0, s < 0 ? Math.PI : 0, 0);
+}
+placeBoards();
+
 let bannerLeft = 0;
 function showBanner(title, sub = '', color = C.accent2, secs = 2.6) {
   const g = banner.g, w = banner.w, h = banner.h;
@@ -175,9 +233,16 @@ function showBanner(title, sub = '', color = C.accent2, secs = 2.6) {
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillStyle = '#fff'; g.font = `800 ${sub ? 92 : 110}px ${FONT}`;
   g.fillText(title, w / 2, sub ? h / 2 - 40 : h / 2);
-  if (sub) { g.fillStyle = '#c9d6f2'; g.font = `500 56px ${FONT}`; g.fillText(sub, w / 2, h / 2 + 62); }
+  if (sub) { g.fillStyle = '#c9d6f2'; g.font = `500 ${sub.length > 34 ? 46 : 56}px ${FONT}`; g.fillText(sub, w / 2, h / 2 + 62); }
   banner.flush();
   bannerLeft = secs;
+}
+
+// Names on the board: who is "you" on this screen and who you're playing.
+function opponentName() {
+  if (G.role === 'guest') return G.guest?.hostName ?? HOST_NAME;
+  if (G.mode === 'versus') return G.net?.friend?.name ?? 'Friend';
+  return G.rival ? `${G.rival.name} · ${LEVELS[G.rival.level].name}` : 'Robot';
 }
 
 function drawScoreboard() {
@@ -201,25 +266,25 @@ function drawScoreboard() {
     });
   } else {
     const m = G.match;
-    const lvl = LEVELS[settings.level].name;
+    const me = G.role === 'guest' ? O : P;
     g.textAlign = 'left'; g.fillStyle = C.accent; g.font = `800 46px ${FONT}`;
-    g.fillText('TABLE TENNIS', 50, 66);
+    g.fillText(G.ladder ? 'LADDER' : G.mode === 'versus' || G.role === 'guest' ? 'FRIENDLY' : 'TABLE TENNIS', 50, 66);
     g.textAlign = 'right'; g.fillStyle = C.dim; g.font = `500 34px ${FONT}`;
     g.fillText(m ? (m.games > 1 ? `Best of ${m.games} · game ${m.gameNo + 1}` : '1 game to 11') : 'Ready', w - 50, 66);
-    const rows = [[P, 'YOU'], [O, `ROBOT · ${lvl}`]];
+    const rows = [[me, 'YOU'], [other(me), opponentName()]];
+    const playing = G.mode === 'match' || G.mode === 'versus';
     rows.forEach(([who, name], i) => {
       const y = 190 + i * 150;
       roundRect(g, 40, y - 62, w - 80, 124, 24);
-      g.fillStyle = who === P ? '#16233f' : '#22192b'; g.fill();
-      const serving = m && !m.over && m.server === who && G.mode === 'match';
-      if (serving) { g.beginPath(); g.arc(80, y, 14, 0, Math.PI * 2); g.fillStyle = '#ffd23f'; g.fill(); }
-      g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = `700 ${who === P ? 52 : 44}px ${FONT}`;
+      g.fillStyle = i === 0 ? '#16233f' : '#22192b'; g.fill();
+      if (m && !m.over && m.server === who && playing) { g.beginPath(); g.arc(80, y, 14, 0, Math.PI * 2); g.fillStyle = '#ffd23f'; g.fill(); }
+      g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = `700 ${i === 0 ? 52 : name.length > 18 ? 36 : 44}px ${FONT}`;
       g.fillText(name, 110, y);
       if (m && m.games > 1) {
         g.textAlign = 'center'; g.fillStyle = C.dim; g.font = `700 44px ${FONT}`;
         g.fillText(String(m.gamesWon[who]), w - 250, y);
       }
-      g.textAlign = 'right'; g.fillStyle = who === P ? '#7fd1ff' : '#ffae6b'; g.font = `800 96px ${FONT}`;
+      g.textAlign = 'right'; g.fillStyle = i === 0 ? '#7fd1ff' : '#ffae6b'; g.font = `800 96px ${FONT}`;
       g.fillText(String(m ? m.score[who] : 0), w - 70, y + 4);
     });
   }
@@ -227,8 +292,9 @@ function drawScoreboard() {
 }
 const cap = s => s[0].toUpperCase() + s.slice(1);
 const spinName = s => ({ none: 'No spin', top: 'Topspin', back: 'Backspin', mix: 'Mixed spin' })[s] || s;
+const hex = n => '#' + n.toString(16).padStart(6, '0');
 
-const menu = new Menu(1.3, 0.82, 1560, 984, renderMenu, onMenuClick);
+const menu = new Menu(1.3, 0.917, 1560, 1100, renderMenu, onMenuClick);
 menu.mesh.position.set(0, 1.32, 0.85);
 menu.mesh.rotation.x = -0.12;
 menu.mesh.renderOrder = 10;               // always on top of the paddle and table
@@ -237,77 +303,125 @@ scene.add(menu.mesh);
 
 function renderMenu(ui) {
   const { w } = ui;
-  ui.text('SPORTS HALL', 60, 92, { size: 34, weight: 800, color: C.accent });
-  ui.text('Table Tennis', 60, 150, { size: 60, weight: 800 });
-  const tabs = [['match', 'Match'], ['practice', 'Practice'], ['settings', 'Settings']];
-  tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 760 + i * 255, 60, 235, 84, label, { selected: G.tab === id, size: 36 }));
+  ui.text('SPORTS HALL', 60, 74, { size: 32, weight: 800, color: C.accent });
+  ui.text('Table Tennis', 60, 128, { size: 52, weight: 800 });
+  if (stats.ladder.champion) ui.text('★ Champion', w - 60, 120, { size: 40, weight: 800, color: '#d4af37', align: 'right' });
+  const tabs = [['match', 'Match'], ['ladder', 'Ladder'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
+  const tw = (w - 120 - 4 * 14) / 5;
+  tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 60 + i * (tw + 14), 160, tw, 78, label, { selected: G.tab === id, size: 34 }));
   const L = 60, R = w - 60, width = R - L;
   const label = (s, y) => ui.text(s, L, y, { size: 32, weight: 650, color: C.dim });
+  const dim = (s, y, size = 30) => ui.text(s, L, y, { size, weight: 500, color: C.dim });
+  const inMatch = G.mode === 'match' && G.match && !G.match.over;
 
   if (G.tab === 'match') {
-    label('Opponent', 232);
-    ui.options('level', L, 252, width, 112, [['easy', 'Easy', 'gentle rallies'], ['medium', 'Medium', 'steady'], ['hard', 'Hard', 'quick and tricky'], ['pro', 'Pro', 'ruthless']], settings.level);
-    label('Match length', 430);
-    ui.options('games', L, 450, width, 92, [[1, '1 game'], [3, 'Best of 3'], [5, 'Best of 5']], settings.games);
+    label('Opponent', 298);
+    ui.options('level', L, 316, width, 112, ['easy', 'medium', 'hard', 'pro'].map(k => [k, LEVELS[k].name, rivalById(QUICK[k]).name]), settings.level);
+    label('Match length', 482);
+    ui.options('games', L, 500, width, 92, [[1, '1 game'], [3, 'Best of 3'], [5, 'Best of 5']], settings.games);
     const rec = Object.keys(LEVELS).map(k => `${LEVELS[k].name} ${stats.wins[k] || 0}–${stats.losses[k] || 0}`).join('   ·   ');
-    ui.text(`Your record (won–lost):  ${rec}`, L, 610, { size: 30, weight: 500, color: C.dim });
-    if (G.lastResult) ui.text(G.lastResult, L, 660, { size: 34, weight: 700, color: G.lastResult.startsWith('You won') ? C.good : C.text });
-    const inMatch = G.mode === 'match' && G.match && !G.match.over;
+    dim(`Your record (won–lost):  ${rec}`, 650);
+    if (G.lastResult) ui.text(G.lastResult, L, 700, { size: 34, weight: 700, color: G.lastResult.startsWith('You won') ? C.good : C.text });
     if (inMatch) {
-      ui.button('resume', L, 700, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
-      ui.button('play', L + width / 2 + 10, 700, width / 2 - 10, 120, 'New match', { size: 42 });
-    } else ui.button('play', L, 700, width, 120, 'Play', { primary: true, size: 52 });
+      ui.button('resume', L, 760, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
+      ui.button('play', L + width / 2 + 10, 760, width / 2 - 10, 120, 'New match', { size: 42 });
+    } else ui.button('play', L, 760, width, 120, 'Play', { primary: true, size: 52 });
+  } else if (G.tab === 'ladder') {
+    const beaten = stats.ladder.beaten;
+    dim(stats.ladder.champion ? 'You beat them all. You\'re the champion! Replay anyone you like.' : 'Climb the ladder: beat each robot to face the next. Beat Omega to become champion.', 292);
+    RIVALS.forEach((r, i) => {
+      const y = 318 + i * 104, done = beaten.includes(r.id), open = i === 0 || beaten.includes(RIVALS[i - 1].id);
+      const g = ui.g;
+      roundRect(g, L, y, width, 92, 22);
+      g.fillStyle = open ? '#1b2438' : '#141a29'; g.fill();
+      g.beginPath(); g.arc(L + 50, y + 46, 26, 0, Math.PI * 2); g.fillStyle = open ? hex(r.look.accent) : '#3a4560'; g.fill();
+      ui.text(String(i + 1), L + 50, y + 48, { size: 30, weight: 800, align: 'center', base: 'middle', color: '#0e1320' });
+      ui.text(r.name, L + 100, y + 40, { size: 38, weight: 800, color: open ? '#fff' : '#6b7896' });
+      ui.text(`${LEVELS[r.level].name} · ${r.games === 1 ? '1 game' : `best of ${r.games}`} · ${r.bio}`, L + 100, y + 76, { size: 25, weight: 500, color: open ? C.dim : '#4f5b78' });
+      if (done) {
+        ui.text('✓ Beaten', R - 250, y + 48, { size: 32, weight: 800, color: C.good, align: 'right', base: 'middle' });
+        ui.button(`ladder:${r.id}`, R - 220, y + 14, 200, 64, 'Replay', { size: 30 });
+      } else if (open) ui.button(`ladder:${r.id}`, R - 260, y + 12, 240, 68, 'Challenge', { primary: true, size: 32 });
+      else ui.text('Locked', R - 30, y + 48, { size: 30, weight: 700, color: '#55627e', align: 'right', base: 'middle' });
+    });
+    if (inMatch) ui.button('resume', L, 950, width, 64, 'Resume match', { primary: true, size: 32 });
   } else if (G.tab === 'practice') {
-    ui.text('The ball machine feeds you balls. Hit them back onto the table, and aim for the glowing targets.', L, 222, { size: 30, weight: 500, color: C.dim });
-    label('Pace', 290);
-    ui.options('pace', L, 306, width, 84, [['slow', 'Slow'], ['medium', 'Medium'], ['fast', 'Fast']], settings.pace);
-    label('Spin', 444);
-    ui.options('spin', L, 460, width, 84, [['none', 'None'], ['top', 'Topspin'], ['back', 'Backspin'], ['mix', 'Mix']], settings.spin);
-    label('Where', 598);
-    ui.options('place', L, 614, width, 84, [['forehand', 'Forehand'], ['backhand', 'Backhand'], ['middle', 'Middle'], ['mix', 'Anywhere']], settings.place);
+    dim('The ball machine feeds you balls. Hit them back onto the table, and aim for the glowing targets.', 292);
+    label('Pace', 352);
+    ui.options('pace', L, 368, width, 84, [['slow', 'Slow'], ['medium', 'Medium'], ['fast', 'Fast']], settings.pace);
+    label('Spin', 506);
+    ui.options('spin', L, 522, width, 84, [['none', 'None'], ['top', 'Topspin'], ['back', 'Backspin'], ['mix', 'Mix']], settings.spin);
+    label('Where', 660);
+    ui.options('place', L, 676, width, 84, [['forehand', 'Forehand'], ['backhand', 'Backhand'], ['middle', 'Middle'], ['mix', 'Anywhere']], settings.place);
     if (G.mode === 'practice') {
-      ui.button('resume', L, 740, width / 2 - 10, 110, 'Resume', { primary: true, size: 46 });
-      ui.button('practice', L + width / 2 + 10, 740, width / 2 - 10, 110, 'Restart', { size: 40 });
-    } else ui.button('practice', L, 740, width, 110, 'Start practice', { primary: true, size: 48 });
+      ui.button('resume', L, 810, width / 2 - 10, 110, 'Resume', { primary: true, size: 46 });
+      ui.button('practice', L + width / 2 + 10, 810, width / 2 - 10, 110, 'Restart', { size: 40 });
+    } else ui.button('practice', L, 810, width, 110, 'Start practice', { primary: true, size: 48 });
+  } else if (G.tab === 'friend') {
+    const n = G.net;
+    dim('Play a friend on a PC or laptop. They open doublehb.github.io/sportshall', 292);
+    dim('in their browser, choose "Join a friend\'s game" and type the code below.', 334);
+    if (!n?.link) {
+      if (n?.error) ui.text(n.error, L, 420, { size: 30, weight: 600, color: C.bad });
+      ui.button('host', L, n?.busy ? 600 : 470, width, 120, n?.busy ? 'Opening a room…' : 'Host a game', { primary: !n?.busy, size: 48, disabled: !!n?.busy });
+    } else {
+      roundRect(ui.g, L, 380, width, 220, 30);
+      ui.g.fillStyle = '#101727'; ui.g.fill();
+      ui.text('ROOM CODE', w / 2, 425, { size: 30, weight: 700, color: C.dim, align: 'center' });
+      ui.text(n.code.split('').join(' '), w / 2, 530, { size: 130, weight: 900, color: '#ffd23f', align: 'center' });
+      const st = n.friend ? `${n.friend.name} is here!` : 'Waiting for your friend to join…';
+      ui.text(st, w / 2, 660, { size: 40, weight: 800, color: n.friend ? C.good : C.text, align: 'center' });
+      ui.text(`Match length: ${settings.games === 1 ? '1 game' : `best of ${settings.games}`} (set on the Match tab)`, w / 2, 715, { size: 28, weight: 500, color: C.dim, align: 'center' });
+      const inVersus = G.mode === 'versus' && G.match && !G.match.over;
+      if (inVersus) ui.button('resume', L, 760, width / 2 - 10, 110, 'Resume', { primary: true, size: 46 });
+      else ui.button('versus', L, 760, width / 2 - 10, 110, 'Start match', { primary: !!n.friend, disabled: !n.friend, size: 44 });
+      ui.button('unhost', L + width / 2 + 10, 760, width / 2 - 10, 110, 'Stop hosting', { size: 40 });
+    }
   } else {
-    label('Paddle hand', 232);
-    ui.options('hand', L, 248, width / 2 - 20, 84, [['right', 'Right'], ['left', 'Left']], settings.hand);
-    ui.text('Sound', L + width / 2 + 20, 232, { size: 32, weight: 650, color: C.dim });
-    ui.options('sound', L + width / 2 + 20, 248, width / 2 - 20, 84, [[true, 'On'], [false, 'Off']], settings.sound);
-    label('Aim assist', 384);
-    ui.options('assist', L, 400, width, 100, [['off', 'Off', 'real physics'], ['light', 'Light', 'a little help'], ['full', 'Full', 'always lands']], settings.assist);
-    label('Serve rules', 552);
-    ui.options('serve', L, 568, width / 2 - 20, 100, [['casual', 'Casual', 'straight over'], ['proper', 'Proper', 'bounce your side first']], settings.serve);
-    ui.text('Paddle angle', L + width / 2 + 20, 552, { size: 32, weight: 650, color: C.dim });
+    label('Paddle hand', 298);
+    ui.options('hand', L, 314, width / 2 - 20, 84, [['right', 'Right'], ['left', 'Left']], settings.hand);
+    ui.text('Sound', L + width / 2 + 20, 298, { size: 32, weight: 650, color: C.dim });
+    ui.options('sound', L + width / 2 + 20, 314, width / 2 - 20, 84, [[true, 'On'], [false, 'Off']], settings.sound);
+    label('Aim assist', 446);
+    ui.options('assist', L, 462, width, 96, [['off', 'Off', 'real physics'], ['light', 'Light', 'a little help'], ['full', 'Full', 'always lands']], settings.assist);
+    label('Robot talk', 600);
+    ui.options('talk', L, 616, width, 84, [['off', 'Off'], ['bubbles', 'Bubbles'], ['beeps', 'Beeps'], ['voice', 'Voice']], settings.talk);
+    label('Serve rules', 742);
+    ui.options('serve', L, 758, width / 2 - 20, 96, [['casual', 'Casual', 'straight over'], ['proper', 'Proper', 'bounce your side first']], settings.serve);
+    ui.text('Paddle angle', L + width / 2 + 20, 742, { size: 32, weight: 650, color: C.dim });
     const ax = L + width / 2 + 20;
-    ui.button('angle:-', ax, 568, 120, 100, '–', { size: 56 });
-    ui.text(`${settings.angle > 0 ? '+' : ''}${settings.angle}°`, ax + (width / 2 - 20) / 2, 620, { size: 52, weight: 800, align: 'center', base: 'middle' });
-    ui.button('angle:+', ax + width / 2 - 140, 568, 120, 100, '+', { size: 56 });
+    ui.button('angle:-', ax, 758, 120, 96, '–', { size: 56 });
+    ui.text(`${settings.angle > 0 ? '+' : ''}${settings.angle}°`, ax + (width / 2 - 20) / 2, 808, { size: 52, weight: 800, align: 'center', base: 'middle' });
+    ui.button('angle:+', ax + width / 2 - 140, 758, 120, 96, '+', { size: 56 });
     if (G.inXR) {
-      ui.button('recentre', L, 720, width / 2 - 10, 100, 'Recentre table', { size: 38 });
-      ui.button('exit', L + width / 2 + 10, 720, width / 2 - 10, 100, G.mr ? 'Exit mixed reality' : 'Exit VR', { size: 38 });
-    } else ui.text('Paddle angle and recentring matter in the headset. The screen version is a preview.', L, 760, { size: 30, weight: 500, color: C.dim });
+      ui.button('recentre', L, 890, width / 2 - 10, 90, 'Recentre table', { size: 36 });
+      ui.button('exit', L + width / 2 + 10, 890, width / 2 - 10, 90, G.mr ? 'Exit mixed reality' : 'Exit VR', { size: 36 });
+    } else dim('Paddle angle and recentring matter in the headset. The screen version is a preview.', 930, 28);
   }
   const help = G.inXR
     ? 'Free hand: trigger = toss the ball · X/Y = menu · stick = move · click stick = recentre   |   point + trigger = click'
     : 'Mouse = move the paddle (it swings by itself) · Space = toss · Esc = menu';
-  ui.text(help, w / 2, 930, { size: 27, weight: 500, color: C.dim, align: 'center' });
-  ui.text(`v${VERSION}`, w - 40, 960, { size: 22, weight: 500, color: '#55627e', align: 'right' });
+  ui.text(help, w / 2, 1046, { size: 27, weight: 500, color: C.dim, align: 'center' });
+  ui.text(`v${VERSION}`, w - 40, 1080, { size: 22, weight: 500, color: '#55627e', align: 'right' });
 }
 
 function onMenuClick(id) {
   sfx.play('click');
   const [k, v] = id.split(':');
   if (k === 'tab') G.tab = v;
-  else if (k === 'level') { settings.level = v; G.bot.setLevel(v); }
+  else if (k === 'level') { settings.level = v; if (G.mode !== 'match') setRival(rivalById(QUICK[v])); }
   else if (k === 'games') settings.games = +v;
-  else if (k === 'pace' || k === 'spin' || k === 'place' || k === 'assist' || k === 'serve') settings[k] = v;
+  else if (['pace', 'spin', 'place', 'assist', 'serve', 'talk'].includes(k)) settings[k] = v;
   else if (k === 'hand') { settings.hand = v; attachHands(); }
   else if (k === 'sound') { settings.sound = v === 'true'; sfx.enabled = settings.sound; }
   else if (k === 'angle') { settings.angle = Math.max(-60, Math.min(60, settings.angle + (v === '+' ? 5 : -5))); applyAngle(); }
+  else if (k === 'ladder') startMatch({ rival: rivalById(v), ladder: true });
   else if (id === 'play') startMatch();
   else if (id === 'practice') startPractice();
   else if (id === 'resume') closeMenu();
+  else if (id === 'host') startHosting();
+  else if (id === 'unhost') stopHosting();
+  else if (id === 'versus') startVersus();
   else if (id === 'recentre') { needRecentre = true; }
   else if (id === 'exit') renderer.xr.getSession()?.end();
   save('sh_settings', settings);
@@ -325,58 +439,74 @@ function closeMenu() {
   if (G.mode === 'menu') return;
   G.paused = false;
   menu.mesh.visible = false;
-  pose.valid = false;    // no velocity spike from where the paddle was when we paused
+  pose.invalidate();    // no velocity spike from where the paddle was when we paused
 }
 function toggleMenu() { if (G.paused) closeMenu(); else openMenu(); }
 
 // ------------------------------------------------------------ game flow --
 function clearPlay() {
-  G.timers = []; G.ball = null; G.ballState = 'none'; G.ref = null;
+  G.timers = []; G.ball = null; G.ballState = 'none'; G.ref = null; G.ladder = false;
+  G.streak = { who: null, n: 0 };
   W.setBall(null);
   targets.root.visible = false;
+  bubble.hide();
+  W.robot.root.visible = true; W.machine.root.visible = false;
+  friendAvatar.root.visible = false; friendDesk.outer.visible = false;
 }
 
-function startMatch() {
+// opts: { rival, ladder } (default: the quick-play robot for the chosen level)
+function startMatch({ rival = rivalById(QUICK[settings.level]), ladder = false } = {}) {
   clearPlay();
   G.mode = 'match';
-  G.bot.setLevel(settings.level);
-  G.match = new Match({ games: settings.games, firstServer: Math.random() < 0.5 ? P : O });
-  W.robot.root.visible = true; W.machine.root.visible = false;
+  G.ladder = ladder;
+  setRival(rival);
+  G.match = new Match({ games: ladder ? rival.games : settings.games, firstServer: Math.random() < 0.5 ? P : O });
   closeMenu();
   drawScoreboard();
-  showBanner('Game on!', `${LEVELS[settings.level].name} robot · ${G.match.server === P ? 'you serve first' : 'robot serves first'}`, C.accent, 2.4);
-  later(2.0, newPoint);
+  showBanner(ladder ? `Ladder: ${rival.name}` : `v ${rival.name}`, `${G.match.server === P ? 'You serve first' : `${rival.name} serves first`}${G.match.games > 1 ? ` · best of ${G.match.games}` : ''}`, hex(rival.look.accent), 2.4);
+  later(0.9, () => robotSay('start', true));
+  later(2.4, newPoint);
 }
 
 function newPoint() {
-  if (G.mode !== 'match' || !G.match || G.match.over) return;
+  if ((G.mode !== 'match' && G.mode !== 'versus') || !G.match || G.match.over) return;
   const server = G.match.server;
   G.ref = new Referee(server, { casualServe: settings.serve === 'casual' });
   G.bot.reset();
   G.lastEventT = G.now;
   drawScoreboard();
+  sendScore();
+  const gp = G.match.gamePoint;
   if (server === P) {
-    holdBall();
-    const gp = G.match.gamePoint;
+    holdBall(P);
     showBanner(gp === P ? 'Game point' : 'Your serve', G.inXR ? 'Pull the trigger on your free hand to toss' : 'Press Space to toss', C.accent2, 3);
+    send({ t: 'msg', k: 'serve', who: P, gp });
+  } else if (G.mode === 'versus') {
+    holdBall(O);
+    showBanner(`${opponentName()} to serve`, gp === O ? 'Game point' : '', C.accent2, 2.5);
+    send({ t: 'msg', k: 'serve', who: O, gp });
   } else {
     G.ball = null; G.ballState = 'none'; W.setBall(null);
-    later(1.0, () => {
-      if (G.mode !== 'match' || !G.ref || G.ref.stage !== 'toss') return;
-      G.ball = G.bot.startServe(G.now);
-      G.ballState = 'toss';
-      G.lastEventT = G.now;
-      sfx.play('toss', G.ball.p);
-    });
+    later(1.0, robotServe);
   }
 }
 
-function holdBall() {
-  G.ball = PH.makeBall(heldBallPos());
+function robotServe() {
+  if (G.mode !== 'match' || !G.ref || G.ref.stage !== 'toss') return;
+  G.ball = G.bot.startServe(G.now);
+  G.ballState = 'toss';
+  G.lastEventT = G.now;
+  sound('toss', G.ball.p);
+}
+
+function holdBall(who) {
+  G.holder = who;
+  G.ball = PH.makeBall(heldBallPos(who));
   G.ballState = 'held';
 }
 
-function heldBallPos() {
+function heldBallPos(who = G.holder) {
+  if (who === O) return friendDesk.heldPos();
   if (G.inXR) {
     const oc = offCtrl();
     if (oc && oc.grip.visible) {
@@ -385,19 +515,19 @@ function heldBallPos() {
     }
     return { x: -0.3, y: 1.1, z: TB.halfL + 0.3 };
   }
-  return { x: desk.target.x - 0.03, y: TB.top + 0.1, z: desk.target.z };
+  return desk.heldPos();
 }
 
-function toss() {
-  if (G.ballState !== 'held' || G.paused) return;
+function toss(who = P) {
+  if (G.ballState !== 'held' || G.holder !== who || G.paused) return;
   let v = { x: 0, y: 2.3, z: 0 };
-  const oc = offCtrl();
+  const oc = who === P ? offCtrl() : null;
   if (G.inXR && oc) v = { x: oc.vel.x * 0.3, y: 2.2 + Math.max(0, oc.vel.y) * 0.3, z: oc.vel.z * 0.3 };
   G.ball.v = v;
   G.ball.w = PH.vec();
   G.ballState = 'toss';
   G.lastEventT = G.now;
-  sfx.play('toss', G.ball.p);
+  sound('toss', G.ball.p);
   haptic(oc, 0.2, 15);
 }
 
@@ -479,40 +609,41 @@ function practiceResult(success, landing) {
 }
 
 // --------------------------------------------------------------- rally --
-function onPlayerHit(hit) {
-  G.lastPlayerHit = G.now;
+// A paddle hit by you (P) or the friend you host (O).
+function onPaddleHit(who, hit, tracker) {
+  G.lastHit[who] = G.now;
   const strength = hit.speed / 12;
-  sfx.play('paddle', G.ball.p, strength);
-  haptic(paddleCtrl(), 0.25 + strength * 0.6, 22);
+  sound('paddle', G.ball.p, strength);
+  if (who === P) haptic(paddleCtrl(), 0.25 + strength * 0.6, 22);
   if (!G.ref || G.ballState === 'dead') return;
   const serving = G.ref.stage === 'toss';
+  const assist = who === P ? settings.assist : (G.net?.friend?.assist ?? 'light');
   // Casual serves get full help whenever assist is on: serving is the fiddly bit.
-  const a = serving && settings.assist !== 'off' ? 1 : ASSIST[settings.assist];
-  G.lastHit = { p: { ...G.ball.p }, v: { ...G.ball.v }, w: { ...G.ball.w }, padVel: pose.vel, n: toP(pose.n) };
+  const a = serving && assist !== 'off' ? 1 : ASSIST[assist];
+  if (who === P) G.lastHitInfo = { p: { ...G.ball.p }, v: { ...G.ball.v }, w: { ...G.ball.w }, padVel: tracker.vel, n: toP(tracker.n) };
   if (a && !(serving && settings.serve === 'proper')) {
-    const v = assistShot(G.ball, a);
+    const v = assistShot(G.ball, a, who === P ? 1 : -1);
     if (v) G.ball.v = v;
   }
-  G.lastHit.assisted = { ...G.ball.v };
   G.ballState = 'live';
-  const res = G.ref.event({ type: 'hit', who: P, t: G.now, p: { ...G.ball.p } });
-  if (G.mode === 'match') G.bot.planReturn(G.ball, G.now);
+  const res = G.ref.event({ type: 'hit', who, t: G.now, p: { ...G.ball.p } });
+  if (G.mode === 'match' && who === P) G.bot.planReturn(G.ball, G.now);
   afterRef(res);
 }
 
 function onRobotHit(shot) {
   G.ball.v = shot.v; G.ball.w = shot.w;
   G.ballState = 'live';
-  sfx.play('paddle', G.ball.p, PH.len(shot.v) / 12);
+  sound('paddle', G.ball.p, PH.len(shot.v) / 12);
   const res = G.ref.event({ type: 'hit', who: O, t: G.now, p: { ...G.ball.p } });
   afterRef(res);
 }
 
 function handleEvent(e) {
   const speed = PH.len(G.ball.v);
-  if (e.type === 'table' || e.type === 'edge') sfx.play('table', e.p, speed / 7);
-  else if (e.type === 'net') sfx.play('net', e.p, speed / 6);
-  else if (e.type === 'floor' && speed > 0.4) sfx.play('floor', e.p, speed / 6);
+  if (e.type === 'table' || e.type === 'edge') sound('table', e.p, speed / 7);
+  else if (e.type === 'net') sound('net', e.p, speed / 6);
+  else if (e.type === 'floor' && speed > 0.4) sound('floor', e.p, speed / 6);
   G.lastEventT = G.now;
   if (!G.ref || G.ballState === 'dead' || G.ballState === 'held') return;
   afterRef(G.ref.event(e));
@@ -527,50 +658,110 @@ function afterRef(res) {
   }
   if (!res) return;
   if (res.retoss) {
-    if (G.ref.server === P) { later(0.5, () => { if (G.ref?.stage === 'toss') holdBall(); }); G.ballState = 'dead'; }
-    else { G.ballState = 'dead'; later(0.8, () => { if (G.ref?.stage === 'toss') { G.ball = G.bot.startServe(G.now); G.ballState = 'toss'; } }); }
+    G.ballState = 'dead';
+    const server = G.ref.server;
+    if (server === P || G.mode === 'versus') later(0.5, () => { if (G.ref?.stage === 'toss') holdBall(server); });
+    else later(0.8, robotServe);
     return;
   }
   G.ballState = 'dead';
-  if (res.let) { showBanner('Let', 'It touched the net, serve again', C.accent2, 1.6); later(1.6, newPoint); return; }
+  if (res.let) {
+    showBanner('Let', 'It touched the net, serve again', C.accent2, 1.6);
+    send({ t: 'msg', k: 'let' });
+    later(1.6, newPoint);
+    return;
+  }
   pointOver(res);
 }
 
 function pointOver(res) {
   G.log.push({ t: +G.now.toFixed(2), winner: res.winner, reason: res.reason });
+  const hits = G.ref?.hits ?? 0;
   const r = G.match.point(res.winner);
   const you = res.winner === P;
-  const reason = res.loser === P ? res.reason : `Robot: ${res.reason.charAt(0).toLowerCase()}${res.reason.slice(1)}`;
-  G.bot.mood = you ? -1 : 1;
+  const versus = G.mode === 'versus';
+  const them = versus ? (G.net?.friend?.name ?? 'Friend') : G.rival.name;
+  const reason = res.loser === P ? res.reason : `${them}: ${res.reason.charAt(0).toLowerCase()}${res.reason.slice(1)}`;
+  G.streak = G.streak.who === res.winner ? { who: res.winner, n: G.streak.n + 1 } : { who: res.winner, n: 1 };
+  if (!versus) G.bot.mood = you ? -1 : 1;
   drawScoreboard();
+  sendScore();
+  send({ t: 'msg', k: r.match ? 'match' : r.game ? 'game' : 'point', winner: res.winner, loser: res.loser, reason: res.reason, history: G.match.history });
+
+  // What the robot makes of it.
+  if (!versus) {
+    const m = G.match, s = m.score;
+    let moment;
+    if (r.match) moment = you ? 'playerWinsMatch' : 'robotWinsMatch';
+    else if (r.game) moment = you ? 'playerWinsGame' : 'robotWinsGame';
+    else if (s.P >= 10 && s.P === s.O) moment = 'deuce';
+    else if (m.gamePoint) moment = m.gamePoint === P ? 'playerGamePoint' : 'robotGamePoint';
+    else if (G.streak.n === 3 || G.streak.n === 5) moment = you ? 'playerStreak' : 'robotStreak';
+    else if (hits >= 10) moment = 'longRally';
+    else if (!you && /own side/.test(res.reason)) moment = 'playerNet';
+    else if (!you && /missed the table/i.test(res.reason)) moment = 'playerLong';
+    else moment = you ? 'playerPoint' : 'robotPoint';
+    later(0.35, () => robotSay(moment, !!(r.game || r.match)));
+    if (r.match) W.robot.celebrate(you ? 'slump' : 'dance');
+    else if (r.game) W.robot.celebrate(you ? 'droop' : 'dance');
+    else if (!you) W.robot.celebrate(G.streak.n >= 3 ? 'spin' : 'pump');
+    else if (Math.random() < 0.6) W.robot.celebrate('droop');
+  }
+
   if (r.match) {
-    const m = G.match, lvl = settings.level;
+    const m = G.match;
     const games = m.history.map(s => `${s.P}–${s.O}`).join(', ');
-    if (you) { stats.wins[lvl] = (stats.wins[lvl] || 0) + 1; sfx.play('cheer', null, 1); W.crowd.cheer(2); }
-    else { stats.losses[lvl] = (stats.losses[lvl] || 0) + 1; sfx.play('groan'); }
+    if (you) {
+      sound('fanfare'); sound('cheer', null, 1); W.crowd.cheer(2); burst(1);
+    } else {
+      sound('groan');
+      if (!versus) confetti.burst(W.robot.headPos(new V3()), 90, 0.6);
+    }
+    if (versus) {
+      G.lastResult = `${you ? 'You won' : `${them} won`} the friendly: ${games}`;
+      showBanner(you ? 'You win!' : `${them} wins`, games, you ? C.good : C.bad, 4);
+      later(4.5, () => { G.mode = 'menu'; openMenu('friend'); });
+      return;
+    }
+    const lvl = G.rival.level;
+    if (you) stats.wins[lvl] = (stats.wins[lvl] || 0) + 1; else stats.losses[lvl] = (stats.losses[lvl] || 0) + 1;
+    let title = you ? 'You win!' : `${them} wins`, sub = games, tab = G.ladder ? 'ladder' : 'match';
+    if (G.ladder && you) {
+      if (!stats.ladder.beaten.includes(G.rival.id)) stats.ladder.beaten.push(G.rival.id);
+      const next = RIVALS[RIVALS.indexOf(G.rival) + 1];
+      if (!next) {
+        stats.ladder.champion = true; trophy.root.visible = true;
+        title = 'CHAMPION!'; sub = `You beat Omega ${games}`;
+        later(1.2, () => { burst(1.4); sound('fanfare'); W.crowd.cheer(2); });
+      } else sub = `${games} · ${next.name} unlocked`;
+    }
     save('sh_stats', stats);
-    G.lastResult = `${you ? 'You won' : 'Robot won'} against ${LEVELS[lvl].name}: ${games}`;
-    showBanner(you ? 'You win!' : 'Robot wins', games, you ? C.good : C.bad, 4);
-    later(4, () => { G.mode = 'menu'; openMenu('match'); });
+    G.lastResult = `${you ? 'You won' : `${them} won`} against ${them}: ${games}`;
+    showBanner(title, sub, you ? (title === 'CHAMPION!' ? '#d4af37' : C.good) : C.bad, 4.5);
+    later(5, () => { G.mode = 'menu'; openMenu(tab); });
     return;
   }
   if (r.game) {
     const g = G.match.history[G.match.history.length - 1];
-    showBanner(you ? 'Game to you!' : 'Game to robot', `${g.P}–${g.O}`, you ? C.good : C.bad, 3);
-    if (you) { sfx.play('cheer', null, 0.8); W.crowd.cheer(1.2); } else sfx.play('lose');
-    later(3.2, newPoint);
+    showBanner(you ? 'Game to you!' : `Game to ${them}`, `${g.P}–${g.O}`, you ? C.good : C.bad, 3);
+    if (you) { sound('cheer', null, 0.8); W.crowd.cheer(1.2); } else sound('lose');
+    later(3.4, newPoint);
     return;
   }
-  if (you) { sfx.play('win'); W.crowd.cheer(0.5); sfx.play('cheer', null, 0.3); } else sfx.play('lose');
-  showBanner(you ? 'Your point' : 'Robot\'s point', reason, you ? C.good : C.bad, 1.9);
-  later(1.9, newPoint);
+  if (you) { sound('win'); W.crowd.cheer(0.5); sound('cheer', null, 0.3); } else sound('lose');
+  showBanner(you ? 'Your point' : `${them}'s point`, reason, you ? C.good : C.bad, 1.9);
+  later(2.0, newPoint);
+}
+
+// Confetti over the table, from both sides.
+function burst(power = 1) {
+  confetti.burst({ x: -0.9, y: 1.0, z: 0.4 }, 160, power);
+  confetti.burst({ x: 0.9, y: 1.0, z: 0.4 }, 160, power);
+  if (G.role === 'host') send({ t: 'confetti', power });
 }
 
 // --------------------------------------------------------------- physics --
 const evs = [];
-function lerpP(a, b, f) { return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f }; }
-function nlerpP(a, b, f) { return PH.norm(lerpP(a, b, f)); }
-
 function simulate(dt) {
   const n = Math.max(1, Math.ceil(dt / PH.STEP)), h = dt / n;
   for (let i = 1; i <= n; i++) {
@@ -582,15 +773,14 @@ function simulate(dt) {
     PH.step(b, h, evs);
     if (b.p.y <= PH.BALL_R + 1e-4) { b.v.x *= 1 - 1.5 * h; b.v.z *= 1 - 1.5 * h; }   // rolling on the floor
 
-    if (pose.valid && G.now - G.lastPlayerHit > 0.08) {
-      const f0 = (i - 1) / n, f1 = i / n;
-      const pad = {
-        prevC: lerpP(pose.pc, pose.c, f0), c: lerpP(pose.pc, pose.c, f1),
-        prevN: nlerpP(pose.pn, pose.n, f0), n: nlerpP(pose.pn, pose.n, f1),
-        vel: pose.vel, ang: pose.ang,
-      };
-      const hit = PH.collidePaddle(b, prevP, pad);
-      if (hit) onPlayerHit(hit);
+    const f0 = (i - 1) / n, f1 = i / n;
+    if (pose.valid && G.now - G.lastHit.P > 0.08) {
+      const hit = PH.collidePaddle(b, prevP, pose.substep(f0, f1));
+      if (hit) onPaddleHit(P, hit, pose);
+    }
+    if (G.mode === 'versus' && friendPose.valid && G.now - G.lastHit.O > 0.08) {
+      const hit = PH.collidePaddle(b, prevP, friendPose.substep(f0, f1));
+      if (hit) onPaddleHit(O, hit, friendPose);
     }
     if (G.mode === 'match' && G.ref && G.ref.due === O && G.ballState !== 'dead') {
       const shot = G.bot.tryHit(b, G.now, { playerX: pose.c.x, incomingSpeed: PH.len(b.v) });
@@ -603,6 +793,207 @@ function simulate(dt) {
     for (const e of evs) handleEvent(e);
     evs.length = 0;
   }
+}
+
+// ------------------------------------------------------------ hosting --
+async function startHosting() {
+  if (G.net?.link || G.net?.busy) return;
+  G.net = { busy: true };
+  menu.redraw();
+  try {
+    const { link, code } = await hostGame({
+      data: onGuestData,
+      close: reason => friendLeft(reason),
+      status: text => { if (G.net) { G.net.error = text; menu.redraw(); } },
+    });
+    G.net = { link, code, friend: null };
+    G.net.beat = setInterval(() => { if (G.net?.friend) link.send({ t: 'hb' }); }, 1000);
+  } catch (e) {
+    G.net = { error: e.message };
+  }
+  menu.redraw();
+}
+
+function stopHosting() {
+  if (G.mode === 'versus') { clearPlay(); G.mode = 'menu'; }
+  G.net?.link?.send({ t: 'bye' });
+  clearInterval(G.net?.beat);
+  G.net?.link?.close();
+  G.net = null;
+  G.role = 'solo';
+  menu.redraw();
+}
+
+// The friend leaving: their goodbye, the channel closing, or 6 s of silence.
+function friendLeft(reason) {
+  if (!G.net?.friend) return;
+  const name = G.net.friend.name;
+  G.net.friend = null;
+  G.role = 'solo';
+  if (G.mode === 'versus') { clearPlay(); G.mode = 'menu'; openMenu('friend'); }
+  showBanner(`${name} left`, reason, C.bad, 3);
+  if (menu.mesh.visible) menu.redraw();
+}
+
+function onGuestData(m) {
+  if (!m || typeof m !== 'object') return;
+  if (G.net) G.net.heard = performance.now();
+  if (m.t === 'bye') return friendLeft('They closed the game');
+  if (m.t === 'join') {
+    const name = String(m.name || 'Player 2').slice(0, 16);
+    G.net.friend = { name, assist: ['off', 'light', 'full'].includes(m.assist) ? m.assist : 'light' };
+    G.role = 'host';
+    send({ t: 'hello', hostName: HOST_NAME, inXR: G.inXR, v: VERSION });
+    sendScore();
+    showBanner(`${name} joined!`, 'Start the match from the Friend tab', C.good, 3);
+    sound('win');
+    if (menu.mesh.visible) menu.redraw();
+  } else if (m.t === 'in') {
+    if (Number.isFinite(m.x) && Number.isFinite(m.y)) friendDesk.aim(m.x, m.y);
+  } else if (m.t === 'toss') {
+    toss(O);
+  }
+}
+
+function startVersus() {
+  if (!G.net?.friend) return;
+  clearPlay();
+  G.mode = 'versus';
+  W.robot.root.visible = false;
+  friendAvatar.root.visible = true; friendDesk.outer.visible = true;
+  friendPose.invalidate();
+  G.match = new Match({ games: settings.games, firstServer: Math.random() < 0.5 ? P : O });
+  closeMenu();
+  drawScoreboard();
+  sendScore();
+  const name = G.net.friend.name;
+  showBanner(`You v ${name}`, G.match.server === P ? 'You serve first' : `${name} serves first`, C.accent, 2.4);
+  send({ t: 'msg', k: 'start', first: G.match.server });
+  later(2.4, newPoint);
+}
+
+function matchSnapshot() {
+  const m = G.match;
+  return m && { score: { ...m.score }, gamesWon: { ...m.gamesWon }, games: m.games, gameNo: m.gameNo, server: m.server, over: m.over, history: m.history };
+}
+function sendScore() { if (G.role === 'host') send({ t: 'score', m: matchSnapshot(), mode: G.mode }); }
+
+// Stream the state to the guest every other frame.
+let sendTick = 0;
+const _p = new V3(), _q = new THREE.Quaternion();
+function streamState() {
+  if (G.role !== 'host') return;
+  if (G.net?.friend && performance.now() - (G.net.heard ?? performance.now()) > 6000) return friendLeft('Lost the connection');
+  if (!G.net?.link?.connected || ++sendTick % 2) return;
+  const b = G.ball;
+  const cam = G.inXR ? renderer.xr.getCamera() : null;
+  let head;
+  if (cam) { cam.getWorldPosition(_p); cam.getWorldQuaternion(_q); head = [_p.x, _p.y, _p.z, _q.x, _q.y, _q.z, _q.w]; }
+  else head = [desk.target.x * 0.5, 1.6, 2.15, 0, 0, 0, 1];
+  paddle.group.getWorldPosition(_p); paddle.group.getWorldQuaternion(_q);
+  const r = v => Math.round(v * 1000) / 1000;
+  send({
+    t: 's',
+    b: b && G.ballState !== 'none' ? [b.p.x, b.p.y, b.p.z, b.v.x, b.v.y, b.v.z, b.w.x, b.w.y, b.w.z].map(r) : null,
+    bs: G.ballState, due: G.ref?.due ?? null, holder: G.holder,
+    hh: head.map(r), hp: [_p.x, _p.y, _p.z, _q.x, _q.y, _q.z, _q.w].map(r),
+    fs: friendDesk.swing, mode: G.mode, paused: G.paused,
+  });
+}
+
+// --------------------------------------------------------------- GUEST --
+// The friend's side: no physics, just draw what the host sends and send back
+// where the mouse points.
+async function startGuest(code, name, assist, note) {
+  sfx.unlock();
+  note('Connecting…');
+  G.guest = { hostName: HOST_NAME, state: null, recvT: 0, lastSend: 0, name };
+  const link = await joinGame(code, {
+    data: onHostData,
+    close: () => { showBanner('The host left', 'Reload the page to play again', C.bad, 30); G.guest.ended = true; },
+  });
+  G.net = { link };
+  G.role = 'guest';
+  G.guest.heard = performance.now();
+  window.addEventListener('pagehide', () => link.send({ t: 'bye' }));
+  setInterval(() => link.send({ t: 'hb' }), 1000);   // keeps going when the tab is in the background
+  G.mode = 'menu';
+  G.desk = true;
+  link.send({ t: 'join', name, assist });
+  // Your end is the far end: turn the view and the boards round.
+  resetDeskCamera(); placeBoards();
+  scene.remove(desk.outer);
+  W.robot.root.visible = false;
+  friendDesk.outer.visible = true;
+  hostAvatar.root.visible = true; hostPaddle.group.visible = true;
+  menu.mesh.visible = false;
+  showOverlay(false);
+  document.getElementById('guest-hud').hidden = false;
+  showBanner('Connected!', 'Waiting for the host to start the match', C.good, 6);
+}
+
+function onHostData(m) {
+  const gs = G.guest;
+  if (!m || typeof m !== 'object' || !gs) return;
+  gs.heard = performance.now();
+  switch (m.t) {
+    case 'hello': gs.hostName = m.hostName || HOST_NAME; drawScoreboard(); break;
+    case 'full': showBanner('That game is full', 'Ask your friend for a new code', C.bad, 10); break;
+    case 'bye': gs.ended = true; showBanner('The host stopped the game', 'Reload the page to join again', C.bad, 30); break;
+    case 's': gs.state = m; gs.recvT = performance.now(); G.mode = m.mode; break;
+    case 'score': G.match = m.m; G.mode = m.mode; drawScoreboard(); break;
+    case 'sfx': sfx.play(m.k, m.p && { x: m.p[0], y: m.p[1], z: m.p[2] }, m.s); break;
+    case 'confetti': confetti.burst({ x: -0.9, y: 1.0, z: -0.4 }, 160, m.power); confetti.burst({ x: 0.9, y: 1.0, z: -0.4 }, 160, m.power); break;
+    case 'msg': guestMessage(m); break;
+  }
+}
+
+// Banners from the guest's point of view (the guest is O).
+function guestMessage(m) {
+  const host = G.guest.hostName;
+  const you = m.winner === O;
+  const reason = r => (m.loser === O ? r : `${host}: ${r.charAt(0).toLowerCase()}${r.slice(1)}`);
+  switch (m.k) {
+    case 'start': showBanner(`You v ${host}`, m.first === O ? 'You serve first' : `${host} serves first`, C.accent, 2.4); break;
+    case 'serve': showBanner(m.who === O ? (m.gp === O ? 'Game point' : 'Your serve') : `${host} to serve`, m.who === O ? 'Press Space to toss' : '', C.accent2, 2.5); break;
+    case 'let': showBanner('Let', 'It touched the net, serve again', C.accent2, 1.6); break;
+    case 'point': showBanner(you ? 'Your point' : `${host}'s point`, reason(m.reason), you ? C.good : C.bad, 1.9); if (you) W.crowd.cheer(0.5); break;
+    case 'game': { const g = m.history[m.history.length - 1]; showBanner(you ? 'Game to you!' : `Game to ${host}`, `${g.O}–${g.P}`, you ? C.good : C.bad, 3); if (you) W.crowd.cheer(1.2); break; }
+    case 'match': showBanner(you ? 'You win!' : `${host} wins`, m.history.map(s => `${s.O}–${s.P}`).join(', '), you ? C.good : C.bad, 5); if (you) W.crowd.cheer(2); break;
+  }
+}
+
+const guestPlane = new THREE.Plane(new V3(0, 0, 1), DESK_Z);   // z = -DESK_Z
+function guestFrame(dt) {
+  const gs = G.guest, st = gs.state;
+  // Your paddle follows your mouse straight away; the host does the hitting.
+  raycaster.setFromCamera(desk.mouse, camera);
+  const p = new V3();
+  if (G.autoplay && st?.b && st.due === O) {
+    const [x, y, z, vx, vy, vz, wx, wy, wz] = st.b;
+    friendDesk.plan(PH.makeBall({ x, y, z }, { x: vx, y: vy, z: vz }, { x: wx, y: wy, z: wz }), `${st.bs}${Math.sign(vz)}${Math.round(z * 2)}`);
+    if (st.bs === 'held' && st.holder === O && performance.now() - (gs.autoToss ?? 0) > 1500) { gs.autoToss = performance.now(); G.net.link.send({ t: 'toss' }); }
+  } else if (!G.autoplay && raycaster.ray.intersectPlane(guestPlane, p)) friendDesk.aim(p.x, p.y);
+  const now = performance.now();
+  if (now - gs.lastSend > 33) { gs.lastSend = now; G.net.link.send({ t: 'in', x: +friendDesk.target.x.toFixed(3), y: +friendDesk.target.y.toFixed(3) }); }
+  if (st) friendDesk.swing = st.fs;
+  friendDesk.update(0, {});
+  // Ball: last known position, carried forward by its velocity.
+  if (st?.b) {
+    const age = Math.min(0.12, (now - gs.recvT) / 1000);
+    const [x, y, z, vx, vy, vz] = st.b;
+    const pos = st.bs === 'held' ? { x, y, z } : { x: x + vx * age, y: Math.max(PH.BALL_R, y + vy * age - 4.9 * age * age), z: z + vz * age };
+    W.setBall(pos, Math.hypot(vx, vy, vz));
+  } else W.setBall(null);
+  if (st) {
+    const [hx, hy, hz, qx, qy, qz, qw] = st.hh;
+    hostPaddle.group.position.set(st.hp[0], st.hp[1], st.hp[2]);
+    hostPaddle.group.quaternion.set(st.hp[3], st.hp[4], st.hp[5], st.hp[6]);
+    hostAvatar.set({ x: hx, y: hy, z: hz }, new THREE.Quaternion(qx, qy, qz, qw).multiply(FLIP), { x: st.hp[0], y: st.hp[1], z: st.hp[2] });
+  }
+  // The host streams constantly, so 6 s of silence means they've gone.
+  if (!gs.ended && now - (gs.heard ?? now) > 6000) { gs.ended = true; showBanner('Lost the host', 'Reload the page to join again', C.bad, 30); }
+  document.getElementById('guest-status').textContent = gs.ended ? 'Disconnected' : st?.paused && G.mode !== 'menu' ? `${gs.hostName} paused the game` : `Playing ${gs.hostName}`;
 }
 
 // --------------------------------------------------------------- XR glue --
@@ -646,7 +1037,7 @@ function onSelect(c) {
     if (uv) menu.click(uv);
     return;
   }
-  if (c === offCtrl()) toss();
+  if (c === offCtrl()) toss(P);
 }
 
 function pointAt(c) {
@@ -726,21 +1117,25 @@ async function enterXR(mode) {
 }
 
 // ------------------------------------------------------------ desktop mode --
-const deskPlane = new THREE.Plane(new V3(0, 0, 1), -1.62);
+const deskPlane = new THREE.Plane(new V3(0, 0, 1), -DESK_Z);
 renderer.domElement.addEventListener('pointermove', e => {
   desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
 });
 renderer.domElement.addEventListener('pointerdown', () => {
   sfx.unlock();
-  if (G.inXR || !menu.mesh.visible) return;
+  if (G.inXR || G.role === 'guest' || !menu.mesh.visible) return;
   raycaster.setFromCamera(desk.mouse, camera);
   const hit = raycaster.intersectObject(menu.mesh, false)[0];
   if (hit) menu.click(hit.uv);
 });
 window.addEventListener('keydown', e => {
-  if (G.inXR) return;
+  if (G.inXR || e.target?.tagName === 'INPUT') return;
+  if (G.role === 'guest') {
+    if (e.code === 'Space') { e.preventDefault(); G.net?.link?.send({ t: 'toss' }); }
+    return;
+  }
   if (e.code === 'Escape' || e.code === 'KeyM') toggleMenu();
-  else if (e.code === 'Space') { e.preventDefault(); toss(); }
+  else if (e.code === 'Space') { e.preventDefault(); toss(P); }
 });
 
 function deskUpdate(dt) {
@@ -750,61 +1145,55 @@ function deskUpdate(dt) {
     menu.hover(hit ? hit.uv : null);
   }
   const p = new V3();
-  if (!G.autoplay && raycaster.ray.intersectPlane(deskPlane, p)) {
-    desk.target.set(THREE.MathUtils.clamp(p.x, -1.1, 1.1), THREE.MathUtils.clamp(p.y, TB.top + 0.04, 1.6), 1.62);
-  }
+  if (!G.autoplay && raycaster.ray.intersectPlane(deskPlane, p)) desk.aim(p.x, p.y);
   const b = G.ball;
-  // Test hook (__sh.autoplay = true): the paddle follows the ball by itself.
-  if (G.autoplay && G.ballState === 'held' && !G.paused) toss();
-  if (G.autoplay && b && G.ballState === 'live' && G.ref?.due === P && desk.swing < 0 && (desk.planRef !== G.ref || desk.planHits !== G.ref.hits)) {
-    // Go to where the ball will cross the paddle plane.
-    desk.planRef = G.ref; desk.planHits = G.ref.hits;
-    const q = PH.predict(b, { maxT: 1.5 }).samples.find(s => s.p.z >= 1.5 && s.v.z > 0);
-    if (q) desk.target.set(THREE.MathUtils.clamp(q.p.x, -1.1, 1.1), THREE.MathUtils.clamp(q.p.y, TB.top + 0.04, 1.6), 1.62);
-  }
-  // Auto swing when the ball comes within reach.
-  if (desk.swing < 0 && b && (G.ballState === 'live' || G.ballState === 'toss') && !G.paused) {
-    const dz = desk.target.z - b.p.z, dx = Math.abs(b.p.x - desk.target.x), dy = Math.abs(b.p.y - desk.target.y);
-    // Only once it's ours to hit: our toss on the way down, or after it bounced on our side.
-    const coming = G.ref?.due === P && (G.ballState === 'toss' ? b.v.y < 0 && b.p.y < TB.top + 0.22 : b.v.z > 0);
-    if (coming && dz < 0.42 && dz > -0.05 && dx < 0.32 && dy < 0.35) desk.swing = 0;
-  }
-  // The swing: forward and upwards through the ball, a gentle topspin stroke.
-  let fz = 0.12, fy = -0.08;
-  if (desk.swing >= 0) {
-    desk.swing += dt / 0.16;
-    const t = Math.min(1, desk.swing);
-    fz = 0.12 - 0.42 * t; fy = -0.08 + 0.18 * t;
-    if (desk.swing > 1.8) desk.swing = -1;
-  }
-  // The blade centre is 13 cm up the paddle; keep it at the mouse point.
-  desk.outer.position.set(desk.target.x, desk.target.y + fy - 0.13, desk.target.z + fz);
-  // Face the middle of the far half, tilted open a little (Rz tips the face up).
-  const d = new V3(-desk.target.x * 0.8, 0, -1.2 - desk.target.z).normalize();
-  const phi = Math.atan2(-d.x, -d.z);
-  desk.outer.rotation.set(0, Math.PI / 2 + phi, 0.28, 'YXZ');
+  // Test hook (__sh.autoplay = true): the paddle plays by itself.
+  if (G.autoplay && G.ballState === 'held' && G.holder === P && !G.paused) toss(P);
+  if (G.autoplay && b && G.ballState === 'live' && G.ref?.due === P) desk.plan(b, `${G.ref.hits}:${G.log.length}:${G.practice?.balls}`);
+  desk.update(dt, { ball: b, inPlay: !G.paused && (G.ballState === 'live' || G.ballState === 'toss'), due: G.ref?.due === P, tossed: G.ballState === 'toss' });
 }
 
 // ---------------------------------------------------------------- frame --
 let lastT = 0;
 renderer.setAnimationLoop(onFrame);
+const _hp = new V3(), _cq = new THREE.Quaternion();
 function onFrame(t, frame, render = true) {
   const dt = Math.min(0.05, Math.max(0, (t - lastT) / 1000) || 1 / 60);
   lastT = t;
-  if (G.inXR && frame) {
-    if (needRecentre && baseSpace) needRecentre = !recentre(frame);
-    pollXR(dt);
-  } else if (G.desk) deskUpdate(dt);
 
-  samplePaddle(dt);
-  if (!G.paused) simulate(dt);
-  if (G.ballState === 'held' && G.ball) G.ball.p = heldBallPos();
+  if (G.role === 'guest') {
+    guestFrame(dt);
+  } else {
+    if (G.inXR && frame) {
+      if (needRecentre && baseSpace) needRecentre = !recentre(frame);
+      pollXR(dt);
+    } else if (G.desk) deskUpdate(dt);
 
-  // Visuals.
-  W.setBall(G.ball ? G.ball.p : null, G.ball ? PH.len(G.ball.v) : 0);
-  if (!G.paused) G.bot.update(dt, G.now);
-  W.robot.update(G.bot, G.ball?.p ?? null, dt);
+    if (G.mode === 'versus') {
+      friendDesk.update(G.paused ? 0 : dt, { ball: G.ball, inPlay: !G.paused && (G.ballState === 'live' || G.ballState === 'toss'), due: G.ref?.due === O, tossed: G.ballState === 'toss' });
+      friendPose.sample(friendPaddle.centre, dt);
+    }
+    const holder = paddleRig.parent;
+    pose.sample(paddle.centre, dt, !!holder && (G.inXR ? holder.visible : G.desk));
+    if (!G.paused) simulate(dt);
+    if (G.ballState === 'held' && G.ball) G.ball.p = heldBallPos();
+
+    W.setBall(G.ball ? G.ball.p : null, G.ball ? PH.len(G.ball.v) : 0);
+    if (!G.paused) G.bot.update(dt, G.now);
+    if (W.robot.root.visible) W.robot.update(G.bot, G.ball?.p ?? null, dt);
+    if (friendAvatar.root.visible) {
+      friendPaddle.group.getWorldPosition(_hp);
+      const hx = friendDesk.target.x * 0.55;
+      const look = G.ball ? Math.atan2(G.ball.p.x - hx, G.ball.p.z + TB.halfL + 0.75) * 0.5 : 0;
+      friendAvatar.set({ x: hx, y: 1.6, z: -(TB.halfL + 0.75) }, _cq.setFromAxisAngle(new V3(0, 1, 0), look), _hp);
+    }
+    streamState();
+  }
+
+  // Shared visuals.
   W.crowd.update(dt);
+  confetti.update(dt);
+  trophy.update(dt);
   if (W.machine.kick > 0) { W.machine.kick = Math.max(0, W.machine.kick - dt * 6); W.machine.tube.position.z = -(TB.halfL + 0.2) - W.machine.kick * 0.03; }
   for (const tg of targets.list) {
     tg.flash = Math.max(0, tg.flash - dt * 2);
@@ -816,10 +1205,12 @@ function onFrame(t, frame, render = true) {
   const bo = banner.mesh.material;
   bo.opacity += ((bannerLeft > 0 ? 1 : 0) - bo.opacity) * Math.min(1, dt * 8);
   banner.mesh.visible = bo.opacity > 0.01;
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  // The bubble sits up and to the right of the robot's head (as you look at it).
+  if (W.robot.root.visible) bubble.update(dt, W.robot.headPos(_hp).add(new V3(0.62, 0.22, 0)), cam.getWorldQuaternion(_cq));
 
   if (!render) return;
   renderer.render(scene, camera);
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   sfx.setListener(cam.matrixWorld.elements);
 }
 
@@ -835,8 +1226,9 @@ const overlay = document.getElementById('overlay');
 function showOverlay(on) { overlay.classList.toggle('hidden', !on); }
 
 async function setupButtons() {
-  const vr = document.getElementById('btn-vr'), ar = document.getElementById('btn-ar'), screen = document.getElementById('btn-screen');
-  const note = document.getElementById('xr-note');
+  const $ = id => document.getElementById(id);
+  const vr = $('btn-vr'), ar = $('btn-ar'), screen = $('btn-screen'), join = $('btn-join');
+  const note = $('xr-note');
   const xr = navigator.xr;
   const vrOk = xr ? await xr.isSessionSupported('immersive-vr').catch(() => false) : false;
   const arOk = xr ? await xr.isSessionSupported('immersive-ar').catch(() => false) : false;
@@ -853,6 +1245,21 @@ async function setupButtons() {
     showOverlay(false);
     openMenu();
   };
+  // Join a friend: show the little form.
+  const form = $('join-form'), codeIn = $('join-code'), nameIn = $('join-name'), assistIn = $('join-assist'), jnote = $('join-note');
+  try { nameIn.value = localStorage.getItem('sh_name') || ''; } catch { /* no storage */ }
+  join.onclick = () => { form.hidden = !form.hidden; if (!form.hidden) codeIn.focus(); };
+  codeIn.oninput = () => { codeIn.value = cleanCode(codeIn.value); };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const code = cleanCode(codeIn.value);
+    if (code.length !== 4) { jnote.textContent = 'The code has 4 letters or numbers.'; return; }
+    const name = (nameIn.value.trim() || 'Player 2').slice(0, 16);
+    try { localStorage.setItem('sh_name', name); } catch { /* no storage */ }
+    form.querySelector('button').disabled = true;
+    try { await startGuest(code, name, assistIn.value, t => { jnote.textContent = t; }); }
+    catch (err) { jnote.textContent = err.message; form.querySelector('button').disabled = false; }
+  };
 }
 setupButtons();
 drawScoreboard();
@@ -862,4 +1269,6 @@ menu.mesh.visible = false;
 // Handy for testing from the console.
 window.__sh = {
   debugXR: () => ({ needRecentre, tablePose: { ...tablePose }, hasBase: !!baseSpace, custom: renderer.xr.getReferenceSpace() !== baseSpace }),
-  G, PH, desk, sfx, advance, settings, W, startMatch, startPractice, openMenu, closeMenu, toss, pose, ctrls, renderer, camera, scene, menu, onMenuClick, enterXR };
+  G, PH, desk, friendDesk, sfx, advance, settings, stats, W, startMatch, startPractice, startVersus, startHosting, openMenu, closeMenu, toss, pose,
+  ctrls, renderer, camera, scene, menu, onMenuClick, enterXR, robotSay, burst, rivalById, startGuest,
+};

@@ -1,9 +1,16 @@
 # Sports Hall: Table Tennis (Meta Quest)
 
 WebXR table tennis for the Meta Quest 3S, in VR (a sports hall with a crowd) or
-mixed reality (the table in your own room). Play a robot at four levels, or
-practise against a ball machine with targets. Plain HTML/JS + three.js, no build
-step.
+mixed reality (the table in your own room). Plain HTML/JS + three.js, no build
+step. Live at https://doublehb.github.io/sportshall/
+
+- **Match**: quick play against a robot at four levels.
+- **Ladder**: six robot characters (Rookie, Bolt, Spinny, Chopper, Vortex, Omega), each with its own style, colours and trash talk. Beat one to unlock the next; beat Omega to become champion (a trophy appears in the hall).
+- **Practice**: ball machine with pace, spin and placement, plus targets.
+- **Friend**: host a game from the headset; a friend on a PC opens the same link, chooses "Join a friend's game" and types the 4-letter code. Peer-to-peer through PeerJS (free cloud matchmaker); the host runs the physics and the friend's browser only sends where their mouse points.
+
+Robots celebrate (fist pumps, spins, dances, sulks), talk in speech bubbles with
+beeps or a real voice (Settings > Robot talk), and confetti flies when you win.
 
 ## Controls (headset)
 
@@ -24,7 +31,11 @@ Proper), paddle angle, sound.
 - `src/physics.js`: ball physics in table space (drag, Magnus spin, bounces, net, swept paddle hits, shot solver)
 - `src/rules.js`: `Referee` (one rally) and `Match` (score, serve order, deuce)
 - `src/ai.js`: the robot (`Bot`, `LEVELS`), legal serve search, the practice `Machine`
-- `src/assist.js`: aim assist
+- `src/assist.js`: aim assist (mirrored for the far end)
+- `src/rivals.js`: the robot characters, their play-style tweaks and lines
+- `src/fx.js`: confetti, speech bubble, trophy, human avatars
+- `src/desk.js`: the mouse-driven paddle (`DeskPaddle`) and blade tracking (`BladeTracker`)
+- `src/net.js`: PeerJS host/join with 4-letter room codes
 - `src/world.js`, `src/panel.js`, `src/audio.js`: visuals, canvas menus/boards, synthesised sounds
 - `src/main.js`: XR session, controllers, game loop, match/practice flow, desktop preview
 

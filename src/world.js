@@ -28,7 +28,7 @@ function radialTexture(inner, outer) {
 function buildTable() {
   const g = new THREE.Group();
   g.name = 'table';
-  const topMat = new THREE.MeshStandardMaterial({ color: 0x1d4fa8, roughness: 0.42, metalness: 0.0 });
+  const topMat = new THREE.MeshStandardMaterial({ color: 0x1d4fa8, roughness: 0.55, metalness: 0.0 });
   const top = new THREE.Mesh(new THREE.BoxGeometry(T.halfW * 2, T.thick, T.halfL * 2), topMat);
   top.position.y = T.top - T.thick / 2;
   g.add(top);
@@ -166,21 +166,51 @@ function buildRobot(envMap) {
   const shoulder = new THREE.Vector3();
   const tmp = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), q = new THREE.Quaternion();
   let bodyX = 0, blink = 0, t = 0;
+  let eyeBase = 0x46e6ff;
+  let anim = null;           // { kind, t, dur } celebration in progress
 
   return {
     root,
+    // Colours for a character: { body, accent, eyes }.
+    setLook({ body: b = 0xeef1f6, accent: a = 0xff7a1a, eyes: e = 0x46e6ff } = {}) {
+      white.color.setHex(b); accent.color.setHex(a); glow.color.setHex(e); eyeBase = e;
+    },
+    // pump | spin | dance | droop | slump
+    celebrate(kind) {
+      const dur = { pump: 0.9, spin: 1.1, dance: 3.2, droop: 1.4, slump: 3.5 }[kind] ?? 1;
+      anim = { kind, t: 0, dur };
+    },
+    get busy() { return !!anim; },
+    headPos(target) { return head.getWorldPosition(target); },
     // bot: Bot (pad position, swing, mood), ball: {x,y,z} or null
     update(bot, ballP, dt) {
       t += dt;
       const s = bot.side;
+      // Celebration offsets.
+      let hop = 0, spin = 0, lean = 0, droop = 0, raise = 0, sway = 0;
+      if (anim) {
+        anim.t += dt;
+        const k = Math.min(1, anim.t / anim.dur), bump = Math.sin(Math.PI * k);
+        switch (anim.kind) {
+          case 'pump': hop = Math.abs(Math.sin(k * Math.PI * 2)) * 0.12; raise = bump * 0.35; break;
+          case 'spin': hop = bump * 0.25; spin = k * Math.PI * 2; raise = bump * 0.3; break;
+          case 'dance': hop = Math.abs(Math.sin(anim.t * 9)) * 0.1; sway = Math.sin(anim.t * 6) * 0.25; lean = Math.sin(anim.t * 6) * 0.2; raise = 0.25 + Math.sin(anim.t * 12) * 0.12; if (k > 0.7) spin = (k - 0.7) / 0.3 * Math.PI * 2; break;
+          case 'droop': droop = bump * 0.6; lean = Math.sin(anim.t * 14) * bump * 0.08; break;
+          case 'slump': droop = Math.min(1, k * 4) * 0.7; hop = -Math.min(1, k * 4) * 0.15; lean = 0.12 * Math.min(1, k * 4); break;
+        }
+        if (k >= 1) anim = null;
+      }
       bodyX += (bot.pad.x * 0.75 - bodyX) * Math.min(1, dt * 6);
-      body.position.set(bodyX, Math.sin(t * 2.2) * 0.015, s * (T.halfL + 0.85));
-      body.rotation.y = s < 0 ? 0 : Math.PI;
-      if (ballP) {
+      body.position.set(bodyX + sway, Math.sin(t * 2.2) * 0.015 + hop, s * (T.halfL + 0.85));
+      body.rotation.set(0, (s < 0 ? 0 : Math.PI) + spin, lean);
+      if (ballP && !anim) {
         tmp.set(ballP.x, ballP.y, ballP.z).sub(head.getWorldPosition(new THREE.Vector3()));
-        const yaw = Math.atan2(tmp.x, tmp.z * -s) * 0.6, pitch = Math.atan2(tmp.y, Math.hypot(tmp.x, tmp.z)) * 0.5;
+        const yaw = Math.max(-1.2, Math.min(1.2, Math.atan2(tmp.x, tmp.z * -s) * 0.6)), pitch = Math.atan2(tmp.y, Math.hypot(tmp.x, tmp.z)) * 0.5;
         head.rotation.y += (yaw * (s < 0 ? 1 : -1) - head.rotation.y) * Math.min(1, dt * 8);
         head.rotation.x += (-pitch - head.rotation.x) * Math.min(1, dt * 8);
+      } else if (anim) {
+        head.rotation.y += (0 - head.rotation.y) * Math.min(1, dt * 8);
+        head.rotation.x += (droop - head.rotation.x) * Math.min(1, dt * 10);
       }
       // Eyes: blink now and then, squash when happy, droop when sad.
       blink -= dt;
@@ -188,14 +218,16 @@ function buildRobot(envMap) {
       const open = blink < 0 ? 0.15 : 1;
       const happy = Math.max(0, bot.mood), sad = Math.max(0, -bot.mood);
       for (const e of eyes) { e.scale.set(1 + happy * 0.3, open * (1 - happy * 0.5) * (1 - sad * 0.3), 1); e.rotation.z = (e.position.x > 0 ? 1 : -1) * sad * 0.5; }
-      eyeMat.color.setHex(sad > 0.3 ? 0xff5a5a : happy > 0.3 ? 0x7dff9a : 0x46e6ff);
-      ring.rotation.z += dt * 2; ring2.rotation.z -= dt * 3;
+      eyeMat.color.setHex(sad > 0.3 ? 0xff5a5a : happy > 0.3 ? 0x7dff9a : eyeBase);
+      ring.rotation.z += dt * (2 + hop * 30); ring2.rotation.z -= dt * (3 + hop * 30);
 
-      // Paddle and arm.
-      padOuter.position.set(bot.pad.x, bot.pad.y, bot.pad.z);
-      padOuter.rotation.set(-bot.swing * 0.5 * s * -1, s < 0 ? -Math.PI / 2 : Math.PI / 2, 0);
-      hand.position.set(bot.pad.x, bot.pad.y - 0.13, bot.pad.z);
-      shoulder.set(bodyX + (bot.pad.x > bodyX ? 0.2 : -0.2), 1.25, body.position.z);
+      // Paddle and arm (the paddle goes up in the air when celebrating).
+      const px = anim ? body.position.x + (bot.pad.x > bodyX ? 0.35 : -0.35) : bot.pad.x;
+      const py = bot.pad.y + raise + hop;
+      padOuter.position.set(px, py, bot.pad.z);
+      padOuter.rotation.set(bot.swing * 0.5 * -s, s < 0 ? -Math.PI / 2 : Math.PI / 2, 0);
+      hand.position.set(px, py - 0.13, bot.pad.z);
+      shoulder.set(body.position.x + (bot.pad.x > bodyX ? 0.2 : -0.2), 1.25 + hop, body.position.z);
       tmp.copy(hand.position).sub(shoulder);
       arm.position.copy(shoulder);
       arm.scale.set(1, tmp.length(), 1);
@@ -358,6 +390,10 @@ function buildHall() {
   const ban = new THREE.Mesh(new THREE.PlaneGeometry(8, 2), new THREE.MeshBasicMaterial({ map: banner }));
   ban.position.set(0, 5.6, -11.9);
   g.add(ban);
+  // And one on the near wall, for a friend looking from the far end.
+  const ban2 = ban.clone();
+  ban2.position.set(0, 5.6, 11.9); ban2.rotation.y = Math.PI;
+  g.add(ban2);
   return g;
 }
 

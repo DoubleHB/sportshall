@@ -42,6 +42,20 @@
   button b { display: block; font-size: 18px; }
   button span.d { display: block; font-size: 14px; color: inherit; opacity: 0.8; margin-top: 2px; }
   #xr-note { color: var(--dim); font-size: 14px; min-height: 20px; margin: 6px 2px 0; line-height: 1.4; }
+  #overlay { overflow-y: auto; }
+  #join-form { margin: -2px 0 12px; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: #141b2c; }
+  #join-form .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  #join-form .row + .row { margin-top: 10px; }
+  #join-form label { flex: 1 1 140px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--dim); }
+  #join-form input, #join-form select { font: inherit; font-size: 17px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: #0e1320; color: var(--text); min-width: 0; }
+  #join-code { letter-spacing: 0.3em; font-weight: 800; text-transform: uppercase; }
+  #join-form button.go { flex: 0 0 auto; width: auto; margin: 0; padding: 11px 26px; justify-content: center; }
+  #join-note { color: var(--dim); font-size: 14px; margin-top: 8px; min-height: 18px; }
+  #guest-hud { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 14px; align-items: center; flex-wrap: wrap; justify-content: center;
+    background: rgba(12, 17, 30, 0.85); border: 1px solid var(--line); border-radius: 999px; padding: 8px 18px; font-size: 14px; max-width: calc(100% - 32px); }
+  #guest-hud[hidden] { display: none; }
+  #guest-status { font-weight: 700; }
+  #guest-hud .keys { color: var(--dim); }
   .foot { margin-top: 16px; color: #66749a; font-size: 12px; display: flex; justify-content: space-between; }
 </style>
 <script type="importmap">
@@ -62,11 +76,24 @@
     <p class="sub">Play a robot at four levels, or practise against the ball machine. You swing a real paddle in your hand, with spin, aim assist and room-scale play.</p>
     <button id="btn-vr" class="primary" disabled><span class="ico">🥽</span><span><b>Play in VR</b><span class="d">In a sports hall with a crowd</span></span></button>
     <button id="btn-ar" disabled><span class="ico">🏠</span><span><b>Play in your room</b><span class="d">Mixed reality: the table appears in your real room</span></span></button>
-    <button id="btn-screen"><span class="ico">🖥️</span><span><b>Preview on this screen</b><span class="d">Mouse moves the paddle, it swings by itself</span></span></button>
+    <button id="btn-screen"><span class="ico">🖥️</span><span><b>Play on this screen</b><span class="d">v the robots or the ball machine. Mouse moves the paddle, it swings by itself</span></span></button>
+    <button id="btn-join"><span class="ico">🤝</span><span><b>Join a friend's game</b><span class="d">Your friend hosts from the Friend tab (in the headset) and tells you the code</span></span></button>
+    <form id="join-form" hidden>
+      <div class="row">
+        <label>Code<input id="join-code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD"></label>
+        <label>Your name<input id="join-name" maxlength="16" placeholder="Player 2"></label>
+      </div>
+      <div class="row">
+        <label>Aim assist<select id="join-assist"><option value="off">Off</option><option value="light" selected>Light</option><option value="full">Full</option></select></label>
+        <button type="submit" class="primary go">Join</button>
+      </div>
+      <div id="join-note"></div>
+    </form>
     <div id="xr-note">Checking for VR…</div>
-    <div class="foot"><span>Clear a space about 2 × 2.5 m</span><span>v0.1</span></div>
+    <div class="foot"><span>Clear a space about 2 × 2.5 m</span><span>v0.2</span></div>
   </div>
 </div>
+<div id="guest-hud" hidden><span id="guest-status">Connected</span><span class="keys">Mouse = paddle · Space = toss when serving</span></div>
 <script type="module">
   const q = new URLSearchParams(location.search);
   // ?pump=1 (testing): animation frames only run when __pump(n) is called, so a
