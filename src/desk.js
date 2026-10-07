@@ -73,6 +73,8 @@ export class BladeTracker {
     this.pc = new THREE.Vector3(); this.pn = new THREE.Vector3(); this.pq = new THREE.Quaternion();
     this.vel = { x: 0, y: 0, z: 0 }; this.ang = { x: 0, y: 0, z: 0 };
     this._dq = new THREE.Quaternion();
+    this.power = 1;     // scales the swing speed the ball feels
+    this.smooth = 0;    // 0..0.9: blend in last frame's speed to calm tracking jitter
   }
   invalidate() { this.valid = false; }
   // centre: the paddle's blade-centre Object3D (its +X is the face normal).
@@ -83,10 +85,13 @@ export class BladeTracker {
     centre.getWorldPosition(this.c);
     centre.getWorldQuaternion(this.q);
     this.n.set(1, 0, 0).applyQuaternion(this.q);
-    if (!this.valid || dt <= 0) { this.pc.copy(this.c); this.pn.copy(this.n); this.pq.copy(this.q); }
+    const fresh = !this.valid || dt <= 0;
+    if (fresh) { this.pc.copy(this.c); this.pn.copy(this.n); this.pq.copy(this.q); }
     this.valid = true;
     const k = 1 / Math.max(dt, 1e-3);
-    this.vel = { x: (this.c.x - this.pc.x) * k, y: (this.c.y - this.pc.y) * k, z: (this.c.z - this.pc.z) * k };
+    const raw = { x: (this.c.x - this.pc.x) * k, y: (this.c.y - this.pc.y) * k, z: (this.c.z - this.pc.z) * k };
+    const sm = fresh ? 0 : this.smooth;
+    this.vel = { x: raw.x + (this.vel.x - raw.x) * sm, y: raw.y + (this.vel.y - raw.y) * sm, z: raw.z + (this.vel.z - raw.z) * sm };
     const dq = this._dq.copy(this.q).multiply(this.pq.clone().invert());
     if (dq.w < 0) { dq.x = -dq.x; dq.y = -dq.y; dq.z = -dq.z; dq.w = -dq.w; }
     const angle = 2 * Math.acos(Math.min(1, dq.w));
@@ -97,6 +102,10 @@ export class BladeTracker {
   substep(f0, f1) {
     const lerp = (a, b, f) => ({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f });
     const nl = (a, b, f) => { const v = lerp(a, b, f), l = Math.hypot(v.x, v.y, v.z) || 1; return { x: v.x / l, y: v.y / l, z: v.z / l }; };
-    return { prevC: lerp(this.pc, this.c, f0), c: lerp(this.pc, this.c, f1), prevN: nl(this.pn, this.n, f0), n: nl(this.pn, this.n, f1), vel: this.vel, ang: this.ang };
+    const p = this.power, v = this.vel, a = this.ang;
+    return {
+      prevC: lerp(this.pc, this.c, f0), c: lerp(this.pc, this.c, f1), prevN: nl(this.pn, this.n, f0), n: nl(this.pn, this.n, f1),
+      vel: { x: v.x * p, y: v.y * p, z: v.z * p }, ang: { x: a.x * p, y: a.y * p, z: a.z * p },
+    };
   }
 }

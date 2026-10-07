@@ -20,13 +20,28 @@ import { createConfetti, createBubble, buildTrophy, buildHuman, FLIP } from './f
 import { DeskPaddle, BladeTracker, DESK_Z } from './desk.js';
 import { hostGame, joinGame, cleanCode } from './net.js';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
 // ------------------------------------------------------------- settings --
-const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps' };
+const FEEL = { size: PH.PADDLE.radius, bounce: PH.PADDLE.e, grip: PH.PADDLE.mu, power: 1, smooth: 0 };
+const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex' };
 const settings = load('sh_settings', DEFAULTS);
+settings.feel = { ...FEEL, ...(settings.feel || {}) };
+// Paddle feel (Settings > Paddle feel): each step, its limits, and how to show it.
+const FEEL_STEPS = {
+  size: { step: 0.004, min: 0.066, max: 0.11, label: 'Sweet spot', show: v => `${Math.round(v * 200)} cm wide`, hint: 'how big the hitting area is' },
+  bounce: { step: 0.02, min: 0.7, max: 0.96, label: 'Bounce', show: v => `${Math.round(v * 100)}%`, hint: 'how lively the rubber is' },
+  grip: { step: 0.05, min: 0.3, max: 0.9, label: 'Spin grip', show: v => `${Math.round(v * 100)}%`, hint: 'how much brushing the ball spins it' },
+  power: { step: 0.05, min: 0.7, max: 1.5, label: 'Swing power', show: v => `${Math.round(v * 100)}%`, hint: 'how hard your swing feels to the ball' },
+  smooth: { step: 0.1, min: 0, max: 0.7, label: 'Smoothing', show: v => (v ? `${Math.round(v * 100)}%` : 'Off'), hint: 'calms jittery tracking (adds a little lag)' },
+};
+function applyFeel() {
+  const f = settings.feel;
+  PH.PADDLE.radius = f.size; PH.PADDLE.e = f.bounce; PH.PADDLE.mu = f.grip;
+  pose.power = f.power; pose.smooth = f.smooth;    // (only called once `pose` exists)
+}
 const stats = load('sh_stats', { wins: {}, losses: {}, bestStreak: 0, ladder: { beaten: [], champion: false } });
 if (!stats.ladder) stats.ladder = { beaten: [], champion: false };
 function load(key, def) { try { return { ...def, ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return { ...def }; } }
@@ -50,16 +65,28 @@ scene.background = BG;
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.02, 80);
 const DESK_CAM = { p: new V3(0, 1.58, 2.55), look: new V3(0, 0.82, -0.7) };
 function resetDeskCamera() {
+  if (G.view) {   // courtside, like a TV camera
+    camera.position.set(3.4, 1.9, 1.1);
+    camera.lookAt(0, 0.8, -0.1);
+    return;
+  }
   const s = G.role === 'guest' ? -1 : 1;
-  camera.position.set(DESK_CAM.p.x, DESK_CAM.p.y, DESK_CAM.p.z * s);
-  camera.lookAt(DESK_CAM.look.x, DESK_CAM.look.y, DESK_CAM.look.z * s);
+  // An upright phone: a little higher, looking further down, so the table fills the screen.
+  const tall = window.innerWidth < window.innerHeight;
+  camera.position.set(DESK_CAM.p.x, tall ? 1.85 : DESK_CAM.p.y, DESK_CAM.p.z * s);
+  camera.lookAt(DESK_CAM.look.x, tall ? 0.5 : DESK_CAM.look.y, DESK_CAM.look.z * s);
 }
-window.addEventListener('resize', () => {
+// On an upright phone, widen the view so the whole table still fits across.
+function fitCamera() {
   if (renderer.xr.isPresenting) return;
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const aspect = window.innerWidth / window.innerHeight;
+  camera.aspect = aspect;
+  camera.fov = aspect < 1 ? Math.min(100, 62 * Math.pow(1 / aspect, 0.65)) : 62;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-});
+}
+window.addEventListener('resize', () => { fitCamera(); resetDeskCamera(); });
+fitCamera();
 
 const W = await buildWorld(scene, renderer);
 const sfx = new Sfx();
@@ -89,6 +116,8 @@ const G = {
   lastResult: null,
   autoplay: false,
   log: [],               // recent point results, for testing
+  hitLog: [],            // your recent hits, for Settings > Paddle feel
+  view: null,            // where VR puts you (null = behind your end of the table)
   inXR: false,
   mr: false,
   desk: false,
@@ -166,7 +195,9 @@ function haptic(c, intensity, ms) {
 // Blade poses frame to frame, for swept collisions.
 const pose = new BladeTracker();
 const friendPose = new BladeTracker();
+applyFeel();
 const toP = v => ({ x: v.x, y: v.y, z: v.z });
+const hex = n => '#' + n.toString(16).padStart(6, '0');
 
 // ------------------------------------------------- characters and effects --
 const confetti = createConfetti(scene);
@@ -193,17 +224,27 @@ function setRival(r) {
 }
 setRival(rivalById(QUICK[settings.level]));
 
-// The robot talks: a speech bubble, plus beeps or a voice.
+// Exhibitions: a second robot at the near end, with its own speech bubble.
+const robot2 = W.makeRobot();
+robot2.root.visible = false;
+const bubble2 = createBubble(scene);
+G.botP = new Bot('medium', { side: 1 });
+G.rivalP = null;
+
+// A robot talks: a speech bubble, plus beeps or a voice. who: O (the usual
+// far-end robot) or P (the near-end robot in an exhibition).
 let lastTalk = -9;
-function robotSay(moment, force = false) {
-  if (G.mode !== 'match' || !G.rival || settings.talk === 'off') return;
+function robotSay(moment, force = false, who = O) {
+  if ((G.mode !== 'match' && G.mode !== 'exhibition') || settings.talk === 'off') return;
+  const rival = who === O ? G.rival : G.rivalP;
+  if (!rival) return;
   if (!force && (Math.random() > (TALK_CHANCE[moment] ?? 0.5) || G.now - lastTalk < 3.5)) return;
-  const line = talkLine(G.rival, moment);
+  const line = talkLine(rival, moment);
   if (!line) return;
   lastTalk = G.now;
-  bubble.say(line, '#' + G.rival.look.accent.toString(16).padStart(6, '0'));
-  const head = W.robot.headPos(new V3());
-  const voice = VOICE[G.rival.voice] ?? { pitch: 1, rate: 1 };
+  (who === O ? bubble : bubble2).say(line, hex(rival.look.accent));
+  const head = (who === O ? W.robot : robot2).headPos(new V3());
+  const voice = VOICE[rival.voice] ?? { pitch: 1, rate: 1 };
   if (settings.talk === 'voice' && sfx.speak(line, voice)) return;
   if (settings.talk === 'beeps' || settings.talk === 'voice') sfx.babble(line, head, voice.pitch * 0.6 + 0.5);
 }
@@ -268,11 +309,12 @@ function drawScoreboard() {
     const m = G.match;
     const me = G.role === 'guest' ? O : P;
     g.textAlign = 'left'; g.fillStyle = C.accent; g.font = `800 46px ${FONT}`;
-    g.fillText(G.ladder ? 'LADDER' : G.mode === 'versus' || G.role === 'guest' ? 'FRIENDLY' : 'TABLE TENNIS', 50, 66);
+    const ex = G.mode === 'exhibition';
+    g.fillText(ex ? 'EXHIBITION' : G.ladder ? 'LADDER' : G.mode === 'versus' || G.role === 'guest' ? 'FRIENDLY' : 'TABLE TENNIS', 50, 66);
     g.textAlign = 'right'; g.fillStyle = C.dim; g.font = `500 34px ${FONT}`;
     g.fillText(m ? (m.games > 1 ? `Best of ${m.games} · game ${m.gameNo + 1}` : '1 game to 11') : 'Ready', w - 50, 66);
-    const rows = [[me, 'YOU'], [other(me), opponentName()]];
-    const playing = G.mode === 'match' || G.mode === 'versus';
+    const rows = ex ? [[P, G.rivalP.name], [O, G.rival.name]] : [[me, 'YOU'], [other(me), opponentName()]];
+    const playing = G.mode === 'match' || G.mode === 'versus' || ex;
     rows.forEach(([who, name], i) => {
       const y = 190 + i * 150;
       roundRect(g, 40, y - 62, w - 80, 124, 24);
@@ -292,7 +334,6 @@ function drawScoreboard() {
 }
 const cap = s => s[0].toUpperCase() + s.slice(1);
 const spinName = s => ({ none: 'No spin', top: 'Topspin', back: 'Backspin', mix: 'Mixed spin' })[s] || s;
-const hex = n => '#' + n.toString(16).padStart(6, '0');
 
 const menu = new Menu(1.3, 0.917, 1560, 1100, renderMenu, onMenuClick);
 menu.mesh.position.set(0, 1.32, 0.85);
@@ -308,7 +349,8 @@ function renderMenu(ui) {
   if (stats.ladder.champion) ui.text('★ Champion', w - 60, 120, { size: 40, weight: 800, color: '#d4af37', align: 'right' });
   const tabs = [['match', 'Match'], ['ladder', 'Ladder'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
   const tw = (w - 120 - 4 * 14) / 5;
-  tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 60 + i * (tw + 14), 160, tw, 78, label, { selected: G.tab === id, size: 34 }));
+  const parentTab = { watch: 'match', feel: 'settings' }[G.tab] ?? G.tab;
+  tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 60 + i * (tw + 14), 160, tw, 78, label, { selected: parentTab === id, size: 34 }));
   const L = 60, R = w - 60, width = R - L;
   const label = (s, y) => ui.text(s, L, y, { size: 32, weight: 650, color: C.dim });
   const dim = (s, y, size = 30) => ui.text(s, L, y, { size, weight: 500, color: C.dim });
@@ -326,6 +368,21 @@ function renderMenu(ui) {
       ui.button('resume', L, 760, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
       ui.button('play', L + width / 2 + 10, 760, width / 2 - 10, 120, 'New match', { size: 42 });
     } else ui.button('play', L, 760, width, 120, 'Play', { primary: true, size: 52 });
+    ui.button('tab:watch', L, 900, width, 76, G.mode === 'exhibition' ? 'Exhibition: resume or change robots' : 'Watch two robots play (exhibition)', { size: 32 });
+  } else if (G.tab === 'watch') {
+    dim('Pick two robots and watch them play from a courtside seat. They talk to each other too.', 292);
+    const chips = (key, y, current) => ui.options(key, L, y, width, 84, RIVALS.map(r => [r.id, r.name, LEVELS[r.level].name]), current, 10);
+    label('Near end (left of you)', 350);
+    chips('exNear', 366, settings.exNear);
+    label('Far end (right of you)', 500);
+    chips('exFar', 516, settings.exFar);
+    label('Match length', 650);
+    ui.options('games', L, 666, width, 84, [[1, '1 game'], [3, 'Best of 3'], [5, 'Best of 5']], settings.games);
+    if (G.mode === 'exhibition' && G.match && !G.match.over) {
+      ui.button('resume', L, 800, width / 2 - 10, 110, 'Resume', { primary: true, size: 46 });
+      ui.button('watch', L + width / 2 + 10, 800, width / 2 - 10, 110, 'Restart', { size: 40 });
+    } else ui.button('watch', L, 800, width, 110, 'Start the exhibition', { primary: true, size: 46 });
+    ui.button('tab:match', L, 930, 300, 70, '‹ Back', { size: 30 });
   } else if (G.tab === 'ladder') {
     const beaten = stats.ladder.beaten;
     dim(stats.ladder.champion ? 'You beat them all. You\'re the champion! Replay anyone you like.' : 'Climb the ladder: beat each robot to face the next. Beat Omega to become champion.', 292);
@@ -377,7 +434,7 @@ function renderMenu(ui) {
       else ui.button('versus', L, 760, width / 2 - 10, 110, 'Start match', { primary: !!n.friend, disabled: !n.friend, size: 44 });
       ui.button('unhost', L + width / 2 + 10, 760, width / 2 - 10, 110, 'Stop hosting', { size: 40 });
     }
-  } else {
+  } else if (G.tab === 'settings') {
     label('Paddle hand', 298);
     ui.options('hand', L, 314, width / 2 - 20, 84, [['right', 'Right'], ['left', 'Left']], settings.hand);
     ui.text('Sound', L + width / 2 + 20, 298, { size: 32, weight: 650, color: C.dim });
@@ -393,22 +450,54 @@ function renderMenu(ui) {
     ui.button('angle:-', ax, 758, 120, 96, '–', { size: 56 });
     ui.text(`${settings.angle > 0 ? '+' : ''}${settings.angle}°`, ax + (width / 2 - 20) / 2, 808, { size: 52, weight: 800, align: 'center', base: 'middle' });
     ui.button('angle:+', ax + width / 2 - 140, 758, 120, 96, '+', { size: 56 });
+    const third = (width - 40) / 3;
+    ui.button('tab:feel', L, 890, G.inXR ? third : width, 90, 'Paddle feel…', { size: 36 });
     if (G.inXR) {
-      ui.button('recentre', L, 890, width / 2 - 10, 90, 'Recentre table', { size: 36 });
-      ui.button('exit', L + width / 2 + 10, 890, width / 2 - 10, 90, G.mr ? 'Exit mixed reality' : 'Exit VR', { size: 36 });
-    } else dim('Paddle angle and recentring matter in the headset. The screen version is a preview.', 930, 28);
+      ui.button('recentre', L + third + 20, 890, third, 90, 'Recentre table', { size: 34 });
+      ui.button('exit', L + 2 * (third + 20), 890, third, 90, G.mr ? 'Exit mixed reality' : 'Exit VR', { size: 34 });
+    }
+  } else if (G.tab === 'feel') {
+    dim('Tune how the paddle feels. Changes work straight away: try a few shots, then come back.', 292);
+    Object.entries(FEEL_STEPS).forEach(([key, s], i) => {
+      const y = 320 + i * 92, v = settings.feel[key];
+      ui.text(s.label, L, y + 38, { size: 36, weight: 750 });
+      ui.text(s.hint, L, y + 72, { size: 25, weight: 500, color: C.dim });
+      ui.button(`feel:${key}:-`, R - 470, y + 4, 100, 76, '–', { size: 50 });
+      ui.text(s.show(v), R - 235, y + 44, { size: 40, weight: 800, align: 'center', base: 'middle', color: Math.abs(v - FEEL[key]) > 1e-6 ? '#ffd23f' : '#fff' });
+      ui.button(`feel:${key}:+`, R - 100, y + 4, 100, 76, '+', { size: 50 });
+    });
+    // Your last few hits, to see what the paddle is doing.
+    const log = G.hitLog;
+    ui.text('Your last hits', L, 800, { size: 30, weight: 700, color: C.dim });
+    if (!log.length) dim('Play a few shots and they show up here.', 846, 28);
+    log.slice(-4).reverse().forEach((h, i) => {
+      ui.text(`Swing ${h.pad.toFixed(1)} m/s → ball ${Math.round(h.out * 3.6)} km/h · ${h.rpm} rpm${h.assisted ? ' · assist helped' : ''}${h.result ? ` · ${h.result}` : ''}`, L, 846 + i * 38, { size: 26, weight: 500, color: h.result === 'landed' ? C.good : h.result ? '#ffb4a8' : C.text });
+    });
+    ui.button('feel:reset', R - 520, 930, 250, 70, 'Reset all', { size: 30 });
+    ui.button('tab:settings', R - 250, 930, 250, 70, '‹ Back', { size: 30 });
   }
   const help = G.inXR
     ? 'Free hand: trigger = toss the ball · X/Y = menu · stick = move · click stick = recentre   |   point + trigger = click'
-    : 'Mouse = move the paddle (it swings by itself) · Space = toss · Esc = menu';
+    : isTouch() ? 'Drag = move the paddle (it swings by itself) · Serve and Menu buttons are at the bottom'
+      : 'Mouse = move the paddle (it swings by itself) · Space = toss · Esc = menu';
   ui.text(help, w / 2, 1046, { size: 27, weight: 500, color: C.dim, align: 'center' });
   ui.text(`v${VERSION}`, w - 40, 1080, { size: 22, weight: 500, color: '#55627e', align: 'right' });
 }
 
 function onMenuClick(id) {
   sfx.play('click');
-  const [k, v] = id.split(':');
+  const [k, v, dir] = id.split(':');
   if (k === 'tab') G.tab = v;
+  else if (k === 'feel') {
+    if (v === 'reset') settings.feel = { ...FEEL };
+    else {
+      const s = FEEL_STEPS[v];
+      settings.feel[v] = +Math.min(s.max, Math.max(s.min, settings.feel[v] + (dir === '+' ? s.step : -s.step))).toFixed(3);
+    }
+    applyFeel();
+  }
+  else if (k === 'exNear' || k === 'exFar') settings[k] = v;
+  else if (id === 'watch') startExhibition();
   else if (k === 'level') { settings.level = v; if (G.mode !== 'match') setRival(rivalById(QUICK[v])); }
   else if (k === 'games') settings.games = +v;
   else if (['pace', 'spin', 'place', 'assist', 'serve', 'talk'].includes(k)) settings[k] = v;
@@ -449,9 +538,50 @@ function clearPlay() {
   G.streak = { who: null, n: 0 };
   W.setBall(null);
   targets.root.visible = false;
-  bubble.hide();
+  bubble.hide(); bubble2.hide();
   W.robot.root.visible = true; W.machine.root.visible = false;
+  robot2.root.visible = false; desk.outer.visible = true;
   friendAvatar.root.visible = false; friendDesk.outer.visible = false;
+  setView(null);
+}
+
+// Where you are: null = behind your end of the table; COURTSIDE = a seat by
+// the side of the court (x, z in table space, th = the way you face, lift =
+// how far up the seat raises you).
+const COURTSIDE = { x: 3.3, z: 0.3, th: Math.PI / 2, lift: 0.3 };
+function setView(v) {
+  if (G.view === v) return;
+  G.view = v;
+  if (G.inXR) needRecentre = true;
+  else resetDeskCamera();
+  placeMenu();
+}
+// The menu floats about a metre in front of wherever you are.
+function placeMenu() {
+  const s = G.view ?? { x: 0, z: TB.halfL + 0.6, th: 0, lift: 0 };
+  const fx = -Math.sin(s.th), fz = -Math.cos(s.th);
+  menu.mesh.position.set(s.x + fx * 1.12, 1.32 + (s.lift || 0), s.z + fz * 1.12);
+  menu.mesh.rotation.set(-0.12, s.th, 0, 'YXZ');
+}
+
+function startExhibition() {
+  clearPlay();
+  G.mode = 'exhibition';
+  setRival(rivalById(settings.exFar));
+  G.rivalP = rivalById(settings.exNear);
+  robot2.setLook(G.rivalP.look);
+  G.botP.setLevel(G.rivalP.level, G.rivalP.tweak);
+  G.botP.reset();
+  robot2.root.visible = true;
+  desk.outer.visible = false;
+  G.match = new Match({ games: settings.games, firstServer: Math.random() < 0.5 ? P : O });
+  setView(COURTSIDE);
+  closeMenu();
+  drawScoreboard();
+  showBanner(`${G.rivalP.name} v ${G.rival.name}`, 'Exhibition · sit back and enjoy it', C.accent, 3);
+  later(0.8, () => robotSay('start', true, P));
+  later(2.4, () => robotSay('start', true, O));
+  later(3.6, newPoint);
 }
 
 // opts: { rival, ladder } (default: the quick-play robot for the chosen level)
@@ -469,17 +599,20 @@ function startMatch({ rival = rivalById(QUICK[settings.level]), ladder = false }
 }
 
 function newPoint() {
-  if ((G.mode !== 'match' && G.mode !== 'versus') || !G.match || G.match.over) return;
+  if (!['match', 'versus', 'exhibition'].includes(G.mode) || !G.match || G.match.over) return;
   const server = G.match.server;
-  G.ref = new Referee(server, { casualServe: settings.serve === 'casual' });
-  G.bot.reset();
+  G.ref = new Referee(server, { casualServe: settings.serve === 'casual' && G.mode !== 'exhibition' });
+  G.bot.reset(); G.botP.reset();
   G.lastEventT = G.now;
   drawScoreboard();
   sendScore();
   const gp = G.match.gamePoint;
-  if (server === P) {
+  if (G.mode === 'exhibition') {
+    G.ball = null; G.ballState = 'none'; W.setBall(null);
+    later(1.0, () => robotServe(server));
+  } else if (server === P) {
     holdBall(P);
-    showBanner(gp === P ? 'Game point' : 'Your serve', G.inXR ? 'Pull the trigger on your free hand to toss' : 'Press Space to toss', C.accent2, 3);
+    showBanner(gp === P ? 'Game point' : 'Your serve', tossHint(), C.accent2, 3);
     send({ t: 'msg', k: 'serve', who: P, gp });
   } else if (G.mode === 'versus') {
     holdBall(O);
@@ -491,9 +624,9 @@ function newPoint() {
   }
 }
 
-function robotServe() {
-  if (G.mode !== 'match' || !G.ref || G.ref.stage !== 'toss') return;
-  G.ball = G.bot.startServe(G.now);
+function robotServe(who = O) {
+  if ((G.mode !== 'match' && G.mode !== 'exhibition') || !G.ref || G.ref.stage !== 'toss') return;
+  G.ball = (who === O ? G.bot : G.botP).startServe(G.now);
   G.ballState = 'toss';
   G.lastEventT = G.now;
   sound('toss', G.ball.p);
@@ -621,9 +754,14 @@ function onPaddleHit(who, hit, tracker) {
   // Casual serves get full help whenever assist is on: serving is the fiddly bit.
   const a = serving && assist !== 'off' ? 1 : ASSIST[assist];
   if (who === P) G.lastHitInfo = { p: { ...G.ball.p }, v: { ...G.ball.v }, w: { ...G.ball.w }, padVel: tracker.vel, n: toP(tracker.n) };
+  let assisted = false;
   if (a && !(serving && settings.serve === 'proper')) {
     const v = assistShot(G.ball, a, who === P ? 1 : -1);
-    if (v) G.ball.v = v;
+    if (v) { G.ball.v = v; assisted = true; }
+  }
+  if (who === P) {
+    G.hitLog.push({ pad: PH.len(tracker.vel) * tracker.power, out: PH.len(G.ball.v), rpm: Math.round(PH.len(G.ball.w) * 60 / (2 * Math.PI)), assisted, result: null });
+    if (G.hitLog.length > 12) G.hitLog.shift();
   }
   G.ballState = 'live';
   const res = G.ref.event({ type: 'hit', who, t: G.now, p: { ...G.ball.p } });
@@ -631,11 +769,13 @@ function onPaddleHit(who, hit, tracker) {
   afterRef(res);
 }
 
-function onRobotHit(shot) {
+function onRobotHit(shot, who = O) {
   G.ball.v = shot.v; G.ball.w = shot.w;
   G.ballState = 'live';
   sound('paddle', G.ball.p, PH.len(shot.v) / 12);
-  const res = G.ref.event({ type: 'hit', who: O, t: G.now, p: { ...G.ball.p } });
+  const res = G.ref.event({ type: 'hit', who, t: G.now, p: { ...G.ball.p } });
+  // In an exhibition the other robot gets ready for it.
+  if (G.mode === 'exhibition' && !res) (who === O ? G.botP : G.bot).planReturn(G.ball, G.now);
   afterRef(res);
 }
 
@@ -651,6 +791,12 @@ function handleEvent(e) {
 
 function afterRef(res) {
   const info = G.ref?.info;
+  // How your last shot turned out, for the hit log.
+  const last = G.hitLog[G.hitLog.length - 1];
+  if (last && !last.result) {
+    if (info?.type === 'landed' && info.hitter === P) last.result = 'landed';
+    else if (res?.loser === P) last.result = res.reason.toLowerCase();
+  }
   if (G.mode === 'practice') {
     if (info?.type === 'landed' && info.hitter === P) return practiceResult(true, info.p);
     if (res && !res.retoss) return practiceResult(res.winner === P, null);
@@ -660,8 +806,9 @@ function afterRef(res) {
   if (res.retoss) {
     G.ballState = 'dead';
     const server = G.ref.server;
-    if (server === P || G.mode === 'versus') later(0.5, () => { if (G.ref?.stage === 'toss') holdBall(server); });
-    else later(0.8, robotServe);
+    if (G.mode === 'exhibition') later(0.8, () => robotServe(server));
+    else if (server === P || G.mode === 'versus') later(0.5, () => { if (G.ref?.stage === 'toss') holdBall(server); });
+    else later(0.8, () => robotServe(O));
     return;
   }
   G.ballState = 'dead';
@@ -683,6 +830,7 @@ function pointOver(res) {
   const them = versus ? (G.net?.friend?.name ?? 'Friend') : G.rival.name;
   const reason = res.loser === P ? res.reason : `${them}: ${res.reason.charAt(0).toLowerCase()}${res.reason.slice(1)}`;
   G.streak = G.streak.who === res.winner ? { who: res.winner, n: G.streak.n + 1 } : { who: res.winner, n: 1 };
+  if (G.mode === 'exhibition') return exhibitionPoint(res, r, hits);
   if (!versus) G.bot.mood = you ? -1 : 1;
   drawScoreboard();
   sendScore();
@@ -753,6 +901,42 @@ function pointOver(res) {
   later(2.0, newPoint);
 }
 
+// A point in a robot-v-robot exhibition: the scorer gloats, the other sulks.
+function exhibitionPoint(res, r, hits) {
+  const win = res.winner, lose = res.loser;
+  const rival = w => (w === P ? G.rivalP : G.rival);
+  const model = w => (w === P ? robot2 : W.robot);
+  const bot = w => (w === P ? G.botP : G.bot);
+  bot(win).mood = 1; bot(lose).mood = -1;
+  drawScoreboard();
+  const big = r.match || r.game;
+  W.crowd.cheer(r.match ? 2 : r.game ? 1.2 : 0.5);
+  sound('cheer', null, r.match ? 1 : r.game ? 0.7 : 0.3);
+  const moment = r.match ? 'robotWinsMatch' : r.game ? 'robotWinsGame' : G.streak.n >= 3 ? 'robotStreak' : hits >= 10 ? 'longRally' : 'robotPoint';
+  later(0.35, () => robotSay(moment, !!big, win));
+  // At the end of a game the loser is a good sport (it's their "you win" line).
+  if (big) later(2.6, () => robotSay(r.match ? 'playerWinsMatch' : 'playerWinsGame', true, lose));
+  model(win).celebrate(big ? 'dance' : G.streak.n >= 3 ? 'spin' : 'pump');
+  model(lose).celebrate(r.match ? 'slump' : 'droop');
+  const name = rival(win).name, loser = rival(lose).name;
+  if (r.match) {
+    const games = G.match.history.map(s => `${s[win]}–${s[lose]}`).join(', ');
+    burst(1);
+    sound('fanfare');
+    showBanner(`${name} wins!`, games, hex(rival(win).look.accent), 5);
+    later(6.5, () => { G.mode = 'menu'; openMenu('watch'); });
+    return;
+  }
+  if (r.game) {
+    const g = G.match.history[G.match.history.length - 1];
+    showBanner(`Game to ${name}`, `${g[win]}–${g[lose]}`, hex(rival(win).look.accent), 3);
+    later(4.5, newPoint);
+    return;
+  }
+  showBanner(`${name}'s point`, `${loser}: ${res.reason.charAt(0).toLowerCase()}${res.reason.slice(1)}`, hex(rival(win).look.accent), 1.9);
+  later(2.2, newPoint);
+}
+
 // Confetti over the table, from both sides.
 function burst(power = 1) {
   confetti.burst({ x: -0.9, y: 1.0, z: 0.4 }, 160, power);
@@ -774,7 +958,7 @@ function simulate(dt) {
     if (b.p.y <= PH.BALL_R + 1e-4) { b.v.x *= 1 - 1.5 * h; b.v.z *= 1 - 1.5 * h; }   // rolling on the floor
 
     const f0 = (i - 1) / n, f1 = i / n;
-    if (pose.valid && G.now - G.lastHit.P > 0.08) {
+    if (pose.valid && G.mode !== 'exhibition' && G.now - G.lastHit.P > 0.08) {
       const hit = PH.collidePaddle(b, prevP, pose.substep(f0, f1));
       if (hit) onPaddleHit(P, hit, pose);
     }
@@ -785,6 +969,15 @@ function simulate(dt) {
     if (G.mode === 'match' && G.ref && G.ref.due === O && G.ballState !== 'dead') {
       const shot = G.bot.tryHit(b, G.now, { playerX: pose.c.x, incomingSpeed: PH.len(b.v) });
       if (shot) onRobotHit(shot);
+    }
+    if (G.mode === 'exhibition' && G.ref && G.ballState !== 'dead') {
+      // The robot whose turn it is: due to return, or serving its own toss.
+      const who = G.ref.due;
+      if (who) {
+        const [me, them] = who === O ? [G.bot, G.botP] : [G.botP, G.bot];
+        const shot = me.tryHit(b, G.now, { playerX: them.pad.x, incomingSpeed: PH.len(b.v) });
+        if (shot) onRobotHit(shot, who);
+      }
     }
     if (G.ballState !== 'dead') {
       if (Math.abs(b.p.z) > 7 || Math.abs(b.p.x) > 6 || b.p.y < -1) evs.push({ type: 'out' });
@@ -928,7 +1121,9 @@ async function startGuest(code, name, assist, note) {
   hostAvatar.root.visible = true; hostPaddle.group.visible = true;
   menu.mesh.visible = false;
   showOverlay(false);
+  showTouchHud();
   document.getElementById('guest-hud').hidden = false;
+  if (isTouch()) document.querySelector('#guest-hud .keys').textContent = 'Drag to move your paddle · tap Serve when it\'s your serve';
   showBanner('Connected!', 'Waiting for the host to start the match', C.good, 6);
 }
 
@@ -955,7 +1150,7 @@ function guestMessage(m) {
   const reason = r => (m.loser === O ? r : `${host}: ${r.charAt(0).toLowerCase()}${r.slice(1)}`);
   switch (m.k) {
     case 'start': showBanner(`You v ${host}`, m.first === O ? 'You serve first' : `${host} serves first`, C.accent, 2.4); break;
-    case 'serve': showBanner(m.who === O ? (m.gp === O ? 'Game point' : 'Your serve') : `${host} to serve`, m.who === O ? 'Press Space to toss' : '', C.accent2, 2.5); break;
+    case 'serve': showBanner(m.who === O ? (m.gp === O ? 'Game point' : 'Your serve') : `${host} to serve`, m.who === O ? tossHint() : '', C.accent2, 2.5); break;
     case 'let': showBanner('Let', 'It touched the net, serve again', C.accent2, 1.6); break;
     case 'point': showBanner(you ? 'Your point' : `${host}'s point`, reason(m.reason), you ? C.good : C.bad, 1.9); if (you) W.crowd.cheer(0.5); break;
     case 'game': { const g = m.history[m.history.length - 1]; showBanner(you ? 'Game to you!' : `Game to ${host}`, `${g.O}–${g.P}`, you ? C.good : C.bad, 3); if (you) W.crowd.cheer(1.2); break; }
@@ -1002,11 +1197,14 @@ const tablePose = { x: 0, z: 0, th: 0 };
 const RECENTRE_DIST = TB.halfL + 0.6;     // you stand this far from the net
 
 function applyTablePose() {
-  const { x, z, th } = tablePose;
-  const off = new XRRigidTransform({ x, y: 0, z }, { x: 0, y: Math.sin(th / 2), z: 0, w: Math.cos(th / 2) });
+  const { x, y = 0, z, th } = tablePose;
+  const off = new XRRigidTransform({ x, y, z }, { x: 0, y: Math.sin(th / 2), z: 0, w: Math.cos(th / 2) });
   renderer.xr.setReferenceSpace(baseSpace.getOffsetReferenceSpace(off));
 }
 
+// Put the table so that you stand at the current spot (G.view, or behind your
+// end), facing the way that spot faces. Rotation phi turns table space into the
+// room; the table's origin goes wherever leaves your head on the spot.
 function recentre(frame) {
   const vp = frame.getViewerPose(baseSpace);
   if (!vp) return false;
@@ -1015,9 +1213,13 @@ function recentre(frame) {
   f.y = 0;
   if (f.lengthSq() < 1e-4) f.set(0, 0, -1);
   f.normalize();
-  tablePose.th = Math.atan2(-f.x, -f.z);
-  tablePose.x = p.x + f.x * RECENTRE_DIST;
-  tablePose.z = p.z + f.z * RECENTRE_DIST;
+  const spot = G.view ?? { x: 0, z: RECENTRE_DIST, th: 0, lift: 0 };
+  const phi = Math.atan2(-f.x, -f.z) - spot.th;
+  const c = Math.cos(phi), s = Math.sin(phi);
+  tablePose.th = phi;
+  tablePose.x = p.x - (spot.x * c + spot.z * s);
+  tablePose.z = p.z - (-spot.x * s + spot.z * c);
+  tablePose.y = -(spot.lift || 0);
   applyTablePose();
   return true;
 }
@@ -1118,11 +1320,17 @@ async function enterXR(mode) {
 
 // ------------------------------------------------------------ desktop mode --
 const deskPlane = new THREE.Plane(new V3(0, 0, 1), -DESK_Z);
-renderer.domElement.addEventListener('pointermove', e => {
-  desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
-});
-renderer.domElement.addEventListener('pointerdown', () => {
+// Mouse or finger. With a finger the paddle sits a little above the touch, so
+// your finger doesn't hide it.
+function aimAt(e) {
+  const lift = e.pointerType === 'touch' ? 70 : 0;
+  desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -((e.clientY - lift) / window.innerHeight) * 2 + 1);
+}
+renderer.domElement.addEventListener('pointermove', aimAt);
+renderer.domElement.addEventListener('pointerdown', e => {
   sfx.unlock();
+  if (e.pointerType === 'touch' && !menu.mesh.visible) { aimAt(e); return; }
+  desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
   if (G.inXR || G.role === 'guest' || !menu.mesh.visible) return;
   raycaster.setFromCamera(desk.mouse, camera);
   const hit = raycaster.intersectObject(menu.mesh, false)[0];
@@ -1179,8 +1387,9 @@ function onFrame(t, frame, render = true) {
     if (G.ballState === 'held' && G.ball) G.ball.p = heldBallPos();
 
     W.setBall(G.ball ? G.ball.p : null, G.ball ? PH.len(G.ball.v) : 0);
-    if (!G.paused) G.bot.update(dt, G.now);
+    if (!G.paused) { G.bot.update(dt, G.now); G.botP.update(dt, G.now); }
     if (W.robot.root.visible) W.robot.update(G.bot, G.ball?.p ?? null, dt);
+    if (robot2.root.visible) robot2.update(G.botP, G.ball?.p ?? null, dt);
     if (friendAvatar.root.visible) {
       friendPaddle.group.getWorldPosition(_hp);
       const hx = friendDesk.target.x * 0.55;
@@ -1207,7 +1416,11 @@ function onFrame(t, frame, render = true) {
   banner.mesh.visible = bo.opacity > 0.01;
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   // The bubble sits up and to the right of the robot's head (as you look at it).
-  if (W.robot.root.visible) bubble.update(dt, W.robot.headPos(_hp).add(new V3(0.62, 0.22, 0)), cam.getWorldQuaternion(_cq));
+  cam.getWorldQuaternion(_cq);
+  // Push the bubble sideways relative to the viewer, so it clears the head.
+  const side = new V3(0.62, 0.22, 0).applyQuaternion(_cq).setY(0.22);
+  if (W.robot.root.visible) bubble.update(dt, W.robot.headPos(_hp).add(side), _cq);
+  if (robot2.root.visible) bubble2.update(dt, robot2.headPos(_hp).add(side), _cq);
 
   if (!render) return;
   renderer.render(scene, camera);
@@ -1224,6 +1437,13 @@ function advance(sec, fps = 72) {
 // --------------------------------------------------------------- overlay --
 const overlay = document.getElementById('overlay');
 function showOverlay(on) { overlay.classList.toggle('hidden', !on); }
+const isTouch = () => window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+const tossHint = () => (G.inXR ? 'Pull the trigger on your free hand to toss' : isTouch() ? 'Tap Serve to toss' : 'Press Space to toss');
+function showTouchHud() {
+  if (!isTouch()) return;
+  document.getElementById('touch-hud').hidden = false;
+  document.getElementById('touch-menu').hidden = G.role === 'guest';
+}
 
 async function setupButtons() {
   const $ = id => document.getElementById(id);
@@ -1243,8 +1463,13 @@ async function setupButtons() {
     sfx.unlock();
     G.desk = true;
     showOverlay(false);
+    showTouchHud();
     openMenu();
   };
+  if (isTouch()) screen.querySelector('.d').textContent = 'v the robots or the ball machine. Drag to move the paddle, it swings by itself';
+  // Buttons for touch screens (no keyboard for Space and Esc).
+  $('touch-serve').onclick = () => { sfx.unlock(); if (G.role === 'guest') G.net?.link?.send({ t: 'toss' }); else toss(P); };
+  $('touch-menu').onclick = () => { sfx.unlock(); toggleMenu(); };
   // Join a friend: show the little form.
   const form = $('join-form'), codeIn = $('join-code'), nameIn = $('join-name'), assistIn = $('join-assist'), jnote = $('join-note');
   try { nameIn.value = localStorage.getItem('sh_name') || ''; } catch { /* no storage */ }

@@ -442,6 +442,8 @@ export function buildWorld(scene, renderer) {
 
     return {
       hall, crowd, table, robot, machine, ball, shadow, trail,
+      // A second robot, for robot-v-robot exhibitions.
+      makeRobot() { const r = buildRobot(env); scene.add(r.root); return r; },
       // Place the ball, its shadow and its trail. p: {x,y,z} or null to hide.
       setBall(p, speed = 0) {
         ball.visible = shadow.visible = !!p;
