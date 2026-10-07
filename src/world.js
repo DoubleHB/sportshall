@@ -182,6 +182,9 @@ function buildRobot(envMap) {
     },
     get busy() { return !!anim; },
     headPos(target) { return head.getWorldPosition(target); },
+    handPos(target) { return hand.getWorldPosition(target); },
+    // Darts: the robot puts its paddle down.
+    showPaddle(on) { padOuter.visible = on; },
     // bot: Bot (pad position, swing, mood), ball: {x,y,z} or null
     update(bot, ballP, dt) {
       t += dt;

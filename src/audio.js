@@ -147,6 +147,17 @@ export class Sfx {
       case 'whoosh':    // round a loop or off a ramp
         this._noise(out, 0.45, 0.18, 'bandpass', 700, 0.6, 0, 0.15);
         break;
+      case 'dart':      // a dart thudding into the sisal
+        this._tone(out, 210, 0.07, 0.45 * k, 'sine', 0, 120);
+        this._noise(out, 0.05, 0.35 * k, 'lowpass', 1400, 0.9);
+        break;
+      case 'clink':     // off a wire and out
+        this._tone(out, 3100, 0.06, 0.2, 'triangle', 0, 2600);
+        this._tone(out, 4700, 0.04, 0.12, 'sine', 0.01);
+        break;
+      case 'swish':     // a dart leaving the hand
+        this._noise(out, 0.16, 0.08 * k, 'bandpass', 1800, 0.9, 0, 0.03);
+        break;
       case 'fanfare':
         [523, 659, 784, 1047].forEach((f, i) => this._tone(out, f, i === 3 ? 0.6 : 0.16, 0.22, 'triangle', i * 0.13));
         break;

@@ -1,7 +1,7 @@
-# Sports Hall: Table Tennis (Meta Quest)
+# Sports Hall: Table Tennis, Mini Golf and Darts (Meta Quest)
 
-WebXR table tennis for the Meta Quest 3S, in VR (a sports hall with a crowd) or
-mixed reality (the table in your own room). Plain HTML/JS + three.js, no build
+WebXR sports for the Meta Quest 3S, in VR (a sports hall with a crowd) or
+mixed reality (in your own room). Plain HTML/JS + three.js, no build
 step. Live at https://doublehb.github.io/sportshall/
 
 - **Match**: quick play against a robot at four levels.
@@ -27,6 +27,24 @@ hand's trigger takes you to your ball, side-on. On a screen, drag back from the
 ball and let go. `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
 walls, bumpers, slopes, windmill gate, cup, putter contact; tested in
 `tests/golf.test.mjs`) and `src/golf/game.js` (visuals, turns, scorecard).
+
+**Darts** (the Darts switch): a regulation board (1.73 m up, the oche 2.37 m away)
+in a cabinet on a little stage. 301 or 501, any finish or double out, one leg or
+best of 3 or 5, against any of the six robots (each throws with its own spread:
+Rookie averages about 26 a visit, Omega about 79) or two people taking turns. The
+robot steps up beside you to throw, the caller calls each visit ("One hundred
+and eighty!"), the scoreboard shows checkouts, and the bed for your first dart
+glows. Practice: Around the Clock (fewest darts), Count-up (8 visits) and Free
+throw. In VR the dart sticks out of your throwing hand's controller: hold the
+trigger (or grip), throw, let go. The throw speed is the peak of the last 120 ms
+(so letting go a moment late doesn't kill it); Settings has aim help (pulls a
+near miss towards where the dart was pointing as you aimed; Full also shows an
+aim dot) and throw power (for darts landing low). On a screen, point at the
+board, press, and let go when the wobble settles. `src/darts/board.js` (sizes,
+scoring, aim points), `rules.js` (x01 legs and busts, checkout routes, Around the
+Clock, Count-up), `flight.js` (projectile, where a throw ends up, bounce-outs off
+the wire, release speed), `robots.js` (spreads, lines, the caller) and `game.js`
+(stage, turns, robot, cameras); tested in `tests/darts.test.mjs`.
 
 Robots celebrate (fist pumps, spins, dances, sulks), talk in speech bubbles with
 beeps or a real voice (Settings > Robot talk), and confetti flies when you win.

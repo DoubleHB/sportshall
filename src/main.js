@@ -24,14 +24,17 @@ import { decodeFeel, feelLink } from './share.js';
 import { LESSONS, LESSON_BALLS, lessonById, judgeHit, judgeShot, judgeServe, starsFor } from './lessons.js';
 import { createGolf } from './golf/game.js';
 import { COURSES as GOLF_COURSES, coursePar } from './golf/course.js';
+import { createDarts, DARTS_VIEW } from './darts/game.js';
+import { DART_AVG } from './darts/robots.js';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
 // ------------------------------------------------------------- settings --
 const FEEL = { size: PH.PADDLE.radius, bounce: PH.PADDLE.e, grip: PH.PADDLE.mu, power: 1, smooth: 0 };
-const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1, golfCourse: 'classic' };
+const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1, golfCourse: 'classic',
+  dartsOpp: 'rookie', dartsStart: 301, dartsFinish: 'any', dartsLegs: 3, dartsAssist: 'light', dartsPower: 1, dartsCaller: true };
 const settings = load('sh_settings', DEFAULTS);
 settings.feel = { ...FEEL, ...(settings.feel || {}) };
 // Paddle feel (Settings > Paddle feel): each step, its limits, and how to show it.
@@ -53,6 +56,7 @@ stats.cups ??= 0;
 stats.lessons ??= {};     // best stars per lesson
 stats.golfBests ??= {};   // best solo round per golf course
 if (stats.golfBest && !stats.golfBests.classic) stats.golfBests.classic = stats.golfBest;   // from v0.6
+stats.darts = { beaten: [], wins: 0, losses: 0, high: 0, n180: 0, bestOut: 0, atcBest: null, countBest: 0, ...(stats.darts || {}) };
 // The cup in progress (kept between visits).
 let cupSaved = null;
 try { cupSaved = JSON.parse(localStorage.getItem('sh_cup') || 'null'); } catch { /* none */ }
@@ -79,6 +83,7 @@ const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerH
 const DESK_CAM = { p: new V3(0, 1.58, 2.55), look: new V3(0, 0.82, -0.7) };
 function resetDeskCamera() {
   if (G.mode === 'golf' && golf?.active) { golf.snapCamera(); return; }   // golf has its own camera
+  if (G.mode === 'darts' && darts?.active) { darts.snapCamera(); return; }   // so do darts
   if (G.view) {   // courtside, like a TV camera
     camera.position.set(3.4, 1.9, 1.1);
     camera.lookAt(0, 0.8, -0.1);
@@ -109,8 +114,8 @@ sfx.enabled = settings.sound;
 // ----------------------------------------------------------------- state --
 const G = {
   role: 'solo',          // solo | host (a friend is connected) | guest
-  sport: settings.sport === 'golf' ? 'golf' : 'tt',
-  mode: 'menu',          // menu | match | practice | versus | exhibition | lesson | golf
+  sport: ['golf', 'darts'].includes(settings.sport) ? settings.sport : 'tt',
+  mode: 'menu',          // menu | match | practice | versus | exhibition | lesson | golf | darts
   paused: true,          // menu open
   tab: 'match',
   now: 0,
@@ -144,6 +149,7 @@ const G = {
 resetDeskCamera();
 
 let golf = null;         // the mini golf game (created once the world exists)
+let darts = null;        // and darts
 
 function later(sec, fn) { G.timers.push({ t: G.now + sec, fn }); }
 function runTimers() {
@@ -202,14 +208,18 @@ function attachHands() {
   const pc = paddleCtrl();
   // Mini golf in VR: a putter hangs from the paddle hand's pointer instead.
   const putting = !!golf && G.mode === 'golf' && G.inXR && !!pc;
+  // Darts in VR: a dart sticks out of the front of the paddle hand's controller.
+  const darting = !!darts && G.mode === 'darts' && G.inXR && !!pc;
+  golf?.putterRig.removeFromParent();
+  darts?.handRig.removeFromParent();
   if (putting) { paddleRig.removeFromParent(); pc.ray.add(golf.putterRig); }
+  else if (darting) { paddleRig.removeFromParent(); pc.ray.add(darts.handRig); }
   else {
-    golf?.putterRig.removeFromParent();
     if (G.inXR && pc) pc.grip.add(paddleRig);
     else if (!G.inXR) desk.inner.add(paddleRig);
     else paddleRig.removeFromParent();
   }
-  for (const c of ctrls) c.model.visible = c !== pc || putting;
+  for (const c of ctrls) c.model.visible = c !== pc || putting || darting;
   applyAngle();
 }
 attachHands();
@@ -245,6 +255,22 @@ golf = createGolf({
     if (G.golfFriend) { send({ t: 'gend' }); G.golfFriend = false; }
     G.mode = 'menu'; openMenu(G.role === 'host' ? 'friend' : 'golf');
   },
+});
+// Darts, the third sport: the robot comes down to the oche to throw with you.
+darts = createDarts({
+  scene, camera, raycaster, settings, stats, save,
+  sfx: { play: (k, p, s) => sfx.play(k, p, s) },
+  showBanner: (...a) => showBanner(...a),
+  isXR: () => G.inXR,
+  robot: W.robot,
+  get banner() { return banner.mesh; },     // darts move the message banner about
+  say: (rival, line) => robotSpeak(rival, line, O),
+  call: text => { if (settings.dartsCaller) sfx.speak(text, { pitch: 0.9, rate: 1.05 }); },
+  haptic: (i, ms) => haptic(paddleCtrl(), i, ms),
+  cheer: a => W.crowd.cheer(a),
+  confetti: p => confetti.burst(p, 220, 0.9),
+  lastResult: text => { G.lastResult = text; },
+  onOver: tab => { G.mode = 'menu'; openMenu(tab); },
 });
 const bubble = createBubble(scene);
 const trophy = buildTrophy();
@@ -287,6 +313,11 @@ function robotSay(moment, force = false, who = O) {
   const line = talkLine(rival, moment);
   if (!line) return;
   lastTalk = G.now;
+  robotSpeak(rival, line, who);
+}
+// Show a robot's line in its bubble and say it (beeps or a voice).
+function robotSpeak(rival, line, who = O) {
+  if (settings.talk === 'off') return;
   (who === O ? bubble : bubble2).say(line, hex(rival.look.accent));
   const head = (who === O ? W.robot : robot2).headPos(new V3());
   const voice = VOICE[rival.voice] ?? { pitch: 1, rate: 1 };
@@ -403,19 +434,22 @@ scene.add(menu.mesh);
 
 function renderMenu(ui) {
   const { w } = ui;
-  const golfing = G.sport === 'golf';
+  const golfing = G.sport === 'golf', darting = G.sport === 'darts';
   ui.text('SPORTS HALL', 60, 74, { size: 32, weight: 800, color: C.accent });
-  ui.text(golfing ? 'Mini Golf' : 'Table Tennis', 60, 128, { size: 52, weight: 800 });
-  // Which sport: the two big switches at the top right.
-  ui.button('sport:tt', w - 60 - 2 * 250 - 14, 36, 250, 70, 'Table Tennis', { selected: !golfing, size: 30 });
-  ui.button('sport:golf', w - 60 - 250, 36, 250, 70, 'Mini Golf', { selected: golfing, size: 30 });
+  ui.text(golfing ? 'Mini Golf' : darting ? 'Darts' : 'Table Tennis', 60, 128, { size: 52, weight: 800 });
+  // Which sport: the big switches at the top right.
+  [['tt', 'Table Tennis'], ['golf', 'Mini Golf'], ['darts', 'Darts']].forEach(([id, name], i) =>
+    ui.button(`sport:${id}`, w - 60 - (3 - i) * 236 + 14, 36, 222, 70, name, { selected: G.sport === id, size: 30 }));
   const gc = GOLF_COURSES[settings.golfCourse] ?? GOLF_COURSES.classic;
+  const D = stats.darts;
   const honours = golfing
     ? (stats.golfBests[gc.id] ? `${gc.name} best: ${stats.golfBests[gc.id]} (par ${coursePar(gc.holes)})` : '')
-    : [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
+    : darting ? [D.beaten.length && `🎯 ${D.beaten.length}/${RIVALS.length} robots beaten`, D.n180 && `${D.n180} × 180`].filter(Boolean).join('   ')
+      : [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
   if (honours) ui.text(honours, w - 60, 140, { size: 30, weight: 800, color: '#d4af37', align: 'right' });
   const tabs = golfing ? [['golf', 'Play'], ['friend', 'Friend'], ['settings', 'Settings']]
-    : [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
+    : darting ? [['darts', 'Match'], ['dpractice', 'Practice'], ['dsettings', 'Settings']]
+      : [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
   const tw = (w - 120 - (tabs.length - 1) * 14) / tabs.length;
   const parentTab = { watch: 'match', feel: 'settings', share: 'settings', lessons: 'practice' }[G.tab] ?? G.tab;
   tabs.forEach(([id, label], i) => ui.button(`tab:${id}`, 60 + i * (tw + 14), 160, tw, 78, label, { selected: parentTab === id, size: 34 }));
@@ -485,6 +519,62 @@ function renderMenu(ui) {
       ui.button('resume', L, 770, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
       ui.button('golf:start', L + width / 2 + 10, 770, width / 2 - 10, 120, 'New round', { size: 42 });
     } else ui.button('golf:start', L, 770, width, 120, `Play ${gc.name}`, { primary: true, size: 50 });
+  } else if (G.tab === 'darts') {
+    label('Opponent', 298);
+    ui.options('dartsOpp', L, 316, width, 112, [...RIVALS.map(r => [r.id, r.name, D.beaten.includes(r.id) ? '✓ beaten' : `averages ${DART_AVG[r.id]}`]), ['local', '2 players', 'take turns']], settings.dartsOpp, 10);
+    label('Game', 482);
+    ui.options('dartsStart', L, 498, width / 2 - 20, 96, [[301, '301', 'quicker'], [501, '501', 'the classic']], settings.dartsStart);
+    ui.text('Finish', L + width / 2 + 20, 482, { size: 32, weight: 650, color: C.dim });
+    ui.options('dartsFinish', L + width / 2 + 20, 498, width / 2 - 20, 96, [['any', 'Any finish', 'hit the exact score'], ['double', 'Double out', 'end on a double']], settings.dartsFinish);
+    label('Match length', 640);
+    ui.options('dartsLegs', L, 656, width, 84, [[1, '1 leg'], [3, 'Best of 3 legs'], [5, 'Best of 5 legs']], settings.dartsLegs);
+    dim(`Won ${D.wins}, lost ${D.losses}  ·  highest visit ${D.high || '–'}  ·  best checkout ${D.bestOut || '–'}  ·  180s ${D.n180}`, 790);
+    if (G.lastResult && G.sport === 'darts') ui.text(G.lastResult, L, 836, { size: 32, weight: 700, color: G.lastResult.startsWith('You beat') ? C.good : C.text });
+    if (G.mode === 'darts' && darts.inProgress() && darts.state.mode === 'x01') {
+      ui.button('resume', L, 866, width / 2 - 10, 116, 'Resume', { primary: true, size: 48 });
+      ui.button('darts:play', L + width / 2 + 10, 866, width / 2 - 10, 116, 'New match', { size: 42 });
+    } else ui.button('darts:play', L, 866, width, 116, settings.dartsOpp === 'local' ? 'Play (take turns)' : `Play ${rivalById(settings.dartsOpp).name}`, { primary: true, size: 50 });
+  } else if (G.tab === 'dpractice') {
+    const rows = [
+      ['atc', 'Around the Clock', 'Hit 1, then 2, then 3, all the way to 20, then the bull. Fewest darts wins.', D.atcBest ? `Best: ${D.atcBest} darts` : ''],
+      ['count', 'Count-up', 'Eight visits of three darts. Score as much as you can.', D.countBest ? `Best: ${D.countBest}` : ''],
+      ['free', 'Free throw', 'No rules: just throw. Every dart\'s score pops up beside it.', ''],
+    ];
+    rows.forEach(([id, name, blurb, best], i) => {
+      const y = 296 + i * 170, g = ui.g;
+      roundRect(g, L, y, width, 150, 24);
+      g.fillStyle = G.mode === 'darts' && darts.state.mode === id ? '#17284a' : '#1b2438'; g.fill();
+      ui.text(name, L + 34, y + 58, { size: 42, weight: 800 });
+      ui.text(blurb, L + 34, y + 108, { size: 27, weight: 500, color: C.dim });
+      if (best) ui.text(best, R - 290, y + 58, { size: 32, weight: 800, color: '#d4af37', align: 'right' });
+      ui.button(`darts:${id}`, R - 250, y + 36, 220, 78, 'Start', { primary: true, size: 36 });
+    });
+    if (G.mode === 'darts' && darts.inProgress() && darts.state.mode !== 'x01') ui.button('resume', L, 830, width, 100, 'Resume', { primary: true, size: 46 });
+  } else if (G.tab === 'dsettings') {
+    label('Throwing hand', 298);
+    ui.options('hand', L, 314, width / 2 - 20, 84, [['right', 'Right'], ['left', 'Left']], settings.hand);
+    ui.text('Sound', L + width / 2 + 20, 298, { size: 32, weight: 650, color: C.dim });
+    ui.options('sound', L + width / 2 + 20, 314, width / 2 - 20, 84, [[true, 'On'], [false, 'Off']], settings.sound);
+    label('Aim help', 446);
+    ui.options('dartsAssist', L, 462, width, 96, G.inXR
+      ? [['off', 'Off', 'real throws'], ['light', 'Light', 'nudges near misses'], ['full', 'Full', 'bigger nudge + an aim dot']]
+      : [['off', 'Off', 'a shaky hand'], ['light', 'Light', 'a steadier aim'], ['full', 'Full', 'rock steady']], settings.dartsAssist);
+    label('Throw power', 600);
+    ui.button('dpower:-', L, 616, 110, 84, '–', { size: 52 });
+    ui.text(`${Math.round(settings.dartsPower * 100)}%`, L + 205, 660, { size: 44, weight: 800, align: 'center', base: 'middle', color: settings.dartsPower !== 1 ? '#ffd23f' : '#fff' });
+    ui.button('dpower:+', L + 300, 616, 110, 84, '+', { size: 52 });
+    ui.text('Darts landing low? Turn it up.', L, 736, { size: 25, weight: 500, color: C.dim });
+    ui.text('Caller', L + width / 2 + 20, 600, { size: 32, weight: 650, color: C.dim });
+    ui.options('dartsCaller', L + width / 2 + 20, 616, width / 2 - 20, 84, [[true, 'On', '"One hundred and eighty!"'], [false, 'Off']], settings.dartsCaller);
+    label('Robot talk', 790);
+    ui.options('talk', L, 806, width, 76, [['off', 'Off'], ['bubbles', 'Bubbles'], ['beeps', 'Beeps'], ['voice', 'Voice']], settings.talk);
+    // Your last throws in VR, for tuning the power on a real headset.
+    const log = darts.log.slice(-2).reverse();
+    log.forEach((t, i) => ui.text(`Throw ${t.speed.toFixed(1)} m/s${t.moved > 0.005 ? ` · aim help moved it ${Math.round(t.moved * 100)} cm` : ''}${t.result ? ` · ${t.result}` : ''}`, L, 916 + i * 34, { size: 25, weight: 500, color: C.text }));
+    if (G.inXR) {
+      ui.button('recentre', L + width - 640, 900, 300, 70, 'Recentre', { size: 32 });
+      ui.button('exit', L + width - 320, 900, 320, 70, G.mr ? 'Exit mixed reality' : 'Exit VR', { size: 32 });
+    }
   } else if (G.tab === 'cup') {
     renderCup(ui, L, R, width, dim);
   } else if (G.tab === 'share') {
@@ -584,7 +674,11 @@ function renderMenu(ui) {
     ui.button('feel:reset', R - 520, 930, 250, 70, 'Reset all', { size: 30 });
     ui.button('tab:settings', R - 250, 930, 250, 70, '‹ Back', { size: 30 });
   }
-  const help = G.inXR
+  const help = darting
+    ? (G.inXR ? 'Throwing hand: hold the trigger (or grip), throw, let go · X/Y = menu · click stick = recentre'
+      : isTouch() ? 'Touch the board to aim, hold still, lift your finger to throw'
+        : 'Point at the board, press and hold until it\'s steady, let go to throw · Esc = menu')
+    : G.inXR
     ? 'Free hand: trigger = toss the ball · X/Y = menu · stick = move · click stick = recentre   |   point + trigger = click'
     : isTouch() ? 'Drag = move the paddle (it swings by itself) · Serve and Menu buttons are at the bottom'
       : 'Mouse = move the paddle (it swings by itself) · Space = toss · Esc = menu';
@@ -743,11 +837,16 @@ function onMenuClick(id) {
   if (k === 'tab') { G.tab = v; G.shareNote = ''; }
   else if (k === 'sport') {
     if (v !== G.sport) {
-      if (G.mode !== 'menu') { clearPlay(); G.mode = 'menu'; }
+      if (G.mode !== 'menu' || darts.active) { clearPlay(); G.mode = 'menu'; }
       G.sport = settings.sport = v;
-      G.tab = v === 'golf' ? 'golf' : 'match';
+      G.tab = v === 'golf' ? 'golf' : v === 'darts' ? 'darts' : 'match';
     }
   }
+  else if (k === 'darts') startDarts(v === 'play' ? 'x01' : v);
+  else if (k === 'dartsOpp' || k === 'dartsFinish' || k === 'dartsAssist') settings[k] = v;
+  else if (k === 'dartsStart' || k === 'dartsLegs') settings[k] = +v;
+  else if (k === 'dartsCaller') settings.dartsCaller = v === 'true';
+  else if (k === 'dpower') settings.dartsPower = +Math.max(0.7, Math.min(1.5, settings.dartsPower + (v === '+' ? 0.05 : -0.05))).toFixed(2);
   else if (id === 'golf:start') startGolf();
   else if (id === 'golfversus') startGolfVersus();
   else if (k === 'golfPlayers') settings.golfPlayers = +v;
@@ -796,7 +895,8 @@ function onMenuClick(id) {
 function openMenu(tab) {
   if (tab) G.tab = tab;
   else if (G.sport === 'golf' && !['golf', 'friend', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
-  else if (G.sport === 'tt' && G.tab === 'golf') G.tab = 'match';
+  else if (G.sport === 'darts' && !['darts', 'dpractice', 'dsettings'].includes(G.tab)) G.tab = 'darts';
+  else if (G.sport === 'tt' && ['golf', 'darts', 'dpractice', 'dsettings'].includes(G.tab)) G.tab = 'match';
   G.paused = true;
   menu.mesh.visible = true;
   menu.redraw();
@@ -823,8 +923,32 @@ function clearPlay() {
   // Back from mini golf: the table and its scoreboard return.
   if (G.golfFriend) { send({ t: 'gend' }); G.golfFriend = false; }
   if (golf?.active) { golf.stop(); attachHands(); }
+  // Back from darts: the robot picks its paddle up again.
+  if (darts?.active) {
+    darts.stop(); attachHands();
+    W.robot.showPaddle(true); W.robot.root.position.set(0, 0, 0); setRival(G.rival);
+    fitCamera(); placeBoards(); banner.mesh.scale.setScalar(1);
+  }
   W.table.visible = true; scoreboard.mesh.visible = true;
   setView(null);
+  serveButton(true);
+}
+// The touch screen's Serve button is only for table tennis.
+function serveButton(on) { document.getElementById('touch-serve').hidden = !on; }
+
+// Darts: mode x01 (a match), atc, count or free.
+function startDarts(mode) {
+  clearPlay();
+  G.mode = 'darts';
+  W.table.visible = false; scoreboard.mesh.visible = false;
+  desk.outer.visible = false;
+  const local = settings.dartsOpp === 'local';
+  setView(DARTS_VIEW);
+  closeMenu();
+  darts.start({ mode, start: settings.dartsStart, doubleOut: settings.dartsFinish === 'double', legs: settings.dartsLegs, rival: mode === 'x01' && !local ? rivalById(settings.dartsOpp) : null });
+  attachHands();
+  serveButton(false);
+  if (!G.inXR) darts.snapCamera();
 }
 
 // players: a number (sharing this screen) or a list of names; me: our index.
@@ -836,6 +960,7 @@ function startGolf(players = settings.golfPlayers, me = null) {
   closeMenu();
   golf.start(players, settings.golfCourse, me);
   attachHands();
+  serveButton(false);
   if (!G.inXR) golf.snapCamera();
 }
 
@@ -1767,6 +1892,7 @@ function onSelect(c) {
   if (c !== offCtrl()) return;
   // Mini golf: the free hand's trigger takes you to your ball.
   if (G.mode === 'golf') { if (golf.phase === 'aim') golf.goToBall(); return; }
+  if (G.mode === 'darts') return;
   // In a lesson, the free hand's trigger replays the stroke (unless you're holding a ball to serve).
   if (G.mode === 'lesson' && G.ballState !== 'held') showDemo(1);
   else toss(P);
@@ -1802,6 +1928,8 @@ function pollXR(dt) {
     if (!gp) continue;
     const btn = i => !!gp.buttons[i]?.pressed;
     const isOff = c === offCtrl();
+    // Darts: the throwing hand holds its dart while the trigger or grip is down.
+    if (c === paddleCtrl()) G.dartHold = !menu.mesh.visible && (btn(0) || btn(1));
     // X / Y (or A / B on the free hand) toggle the menu.
     for (const bi of [4, 5]) {
       const now = btn(bi);
@@ -1857,15 +1985,23 @@ function aimAt(e) {
   desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -((e.clientY - lift) / window.innerHeight) * 2 + 1);
 }
 const ndcOf = e => new THREE.Vector2(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+// Darts aim a little above a finger, so it doesn't hide the board.
+const dartNdc = e => ndcOf(e.pointerType === 'touch' ? { clientX: e.clientX, clientY: e.clientY - 70 } : e);
 renderer.domElement.addEventListener('pointermove', e => {
   if (G.mode === 'golf' && !menu.mesh.visible && !G.inXR) { desk.mouse.copy(ndcOf(e)); golf.pointerMove(ndcOf(e)); return; }
+  if (G.mode === 'darts' && !menu.mesh.visible && !G.inXR) { desk.mouse.copy(ndcOf(e)); darts.pointerMove(dartNdc(e)); return; }
   aimAt(e);
 });
-renderer.domElement.addEventListener('pointerup', () => { if (G.mode === 'golf' && !G.inXR) golf.pointerUp(); });
+renderer.domElement.addEventListener('pointerup', () => {
+  if (G.mode === 'golf' && !G.inXR) golf.pointerUp();
+  if (G.mode === 'darts' && !G.inXR) darts.pointerUp();
+});
 renderer.domElement.addEventListener('pointerdown', e => {
   sfx.unlock();
   // Mini golf on a screen: press, drag back from the ball, let go.
   if (G.mode === 'golf' && !menu.mesh.visible && !G.inXR) { golf.pointerDown(ndcOf(e)); return; }
+  // Darts: press to steady your aim, let go to throw.
+  if (G.mode === 'darts' && !menu.mesh.visible && !G.inXR) { darts.pointerDown(dartNdc(e)); return; }
   if (e.pointerType === 'touch' && !menu.mesh.visible) { aimAt(e); return; }
   desk.mouse.set(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
   if (G.inXR || G.role === 'guest' || !menu.mesh.visible) return;
@@ -1890,7 +2026,7 @@ function deskUpdate(dt) {
     const hit = raycaster.intersectObject(menu.mesh, false)[0];
     menu.hover(hit ? hit.uv : null);
   }
-  if (G.mode === 'golf') return;          // golf handles its own pointer
+  if (G.mode === 'golf' || G.mode === 'darts') return;          // golf and darts handle their own pointer
   const p = new V3();
   if (!G.autoplay && raycaster.ray.intersectPlane(deskPlane, p)) desk.aim(p.x, p.y);
   const b = G.ball;
@@ -1926,12 +2062,13 @@ function onFrame(t, frame, render = true) {
     const holder = paddleRig.parent;
     pose.sample(paddle.centre, dt, !!holder && (G.inXR ? holder.visible : G.desk));
     if (G.mode === 'golf') golf.update(dt, { xr: G.inXR, paused: G.paused, holder: golf.putterRig.parent });
+    else if (darts.active) darts.update(dt, { xr: G.inXR, mr: G.mr, paused: G.paused || G.mode !== 'darts', holding: G.dartHold });
     else if (!G.paused) simulate(dt);
     if (G.ballState === 'held' && G.ball) G.ball.p = heldBallPos();
 
     W.setBall(G.ball ? G.ball.p : null, G.ball ? PH.len(G.ball.v) : 0);
     if (!G.paused) { G.bot.update(dt, G.now); G.botP.update(dt, G.now); }
-    if (W.robot.root.visible) W.robot.update(G.bot, G.ball?.p ?? null, dt);
+    if (W.robot.root.visible && !darts.active) W.robot.update(G.bot, G.ball?.p ?? null, dt);
     if (robot2.root.visible) robot2.update(G.botP, G.ball?.p ?? null, dt);
     if (friendAvatar.root.visible) {
       friendPaddle.group.getWorldPosition(_hp);
@@ -2057,7 +2194,7 @@ menu.mesh.visible = false;
 // Handy for testing from the console.
 window.__sh = {
   debugXR: () => ({ needRecentre, tablePose: { ...tablePose }, hasBase: !!baseSpace, custom: renderer.xr.getReferenceSpace() !== baseSpace }),
-  get golf() { return golf; }, startGolf,
+  get golf() { return golf; }, startGolf, get darts() { return darts; }, startDarts,
   G, PH, desk, friendDesk, sfx, advance, settings, stats, W, startMatch, startPractice, startVersus, startHosting, openMenu, closeMenu, toss, pose,
   ctrls, renderer, camera, scene, menu, onMenuClick, enterXR, robotSay, burst, rivalById, startGuest,
 };
