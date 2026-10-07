@@ -841,7 +841,8 @@ async function setupButtons() {
   const vrOk = xr ? await xr.isSessionSupported('immersive-vr').catch(() => false) : false;
   const arOk = xr ? await xr.isSessionSupported('immersive-ar').catch(() => false) : false;
   vr.disabled = !vrOk; ar.disabled = !arOk;
-  if (!vrOk) note.textContent = window.isSecureContext
+  if (vrOk) note.textContent = 'Ready. Pick up both controllers, paddle in your right hand (you can change that in Settings).';
+  else note.textContent = window.isSecureContext
     ? 'VR isn\'t available in this browser. Open this page in the Meta Quest browser to play in VR.'
     : 'VR needs a secure (https) page. Open the https link in the Meta Quest browser.';
   vr.onclick = () => enterXR('immersive-vr').catch(err => { note.textContent = `Couldn't start VR: ${err.message}`; });
