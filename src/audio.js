@@ -158,6 +158,20 @@ export class Sfx {
       case 'swish':     // a dart leaving the hand
         this._noise(out, 0.16, 0.08 * k, 'bandpass', 1800, 0.9, 0, 0.03);
         break;
+      case 'roll':      // a bowling ball rumbling down the lane (k: how long, in seconds / 2)
+        this._noise(out, 0.6 + k * 1.6, 0.16, 'lowpass', 220, 0.9, 0, 0.08);
+        this._tone(out, 62, 0.6 + k * 1.6, 0.12, 'sine', 0, 48);
+        break;
+      case 'pins': {    // the crash of pins: a thump and a scatter of wooden clacks
+        this._tone(out, 140, 0.12, 0.45 * k, 'sine', 0, 70);
+        this._noise(out, 0.35, 0.35 * k, 'bandpass', 1500, 0.7, 0, 0.004);
+        for (let i = 0; i < 6 + 10 * k; i++) this._tone(out, 650 + Math.random() * 900, 0.05, 0.16 * k, 'square', Math.random() * 0.45, 420 + Math.random() * 300);
+        break;
+      }
+      case 'thud':      // a ball dropping into the gutter, or onto the lane
+        this._tone(out, 95, 0.14, 0.4 * k, 'sine', 0, 60);
+        this._noise(out, 0.08, 0.2 * k, 'lowpass', 600, 0.8);
+        break;
       case 'fanfare':
         [523, 659, 784, 1047].forEach((f, i) => this._tone(out, f, i === 3 ? 0.6 : 0.16, 0.22, 'triangle', i * 0.13));
         break;

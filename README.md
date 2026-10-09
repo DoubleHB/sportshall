@@ -1,4 +1,4 @@
-# Sports Hall: Table Tennis, Mini Golf and Darts (Meta Quest)
+# Sports Hall: Table Tennis, Mini Golf, Darts and Bowling (Meta Quest)
 
 WebXR sports for the Meta Quest 3S, in VR (a sports hall with a crowd) or
 mixed reality (in your own room). Plain HTML/JS + three.js, no build
@@ -82,6 +82,26 @@ scoring, aim points), `rules.js` (x01 legs and busts, checkout routes, Cricket,
 Killer and where to aim at each, Around the Clock, Count-up), `flight.js` (projectile, where a throw ends up, bounce-outs off
 the wire, release speed), `robots.js` (spreads, lines, the caller) and `game.js`
 (stage, turns, robot, cameras); tested in `tests/darts.test.mjs`.
+
+**Bowling** (the Bowling switch): ten-pin on a lane down the hall (9.2 m from the
+foul line to the head pin, as the hall is 16 m long; real-size pins, ball, lane
+and gutters, kickbacks either side of the pin deck, the far barrier as the back
+of the pit). Play alone, with up to four people taking turns, and/or against a
+robot; 10 frames or a quick 5; bumpers on or off. In VR the ball sits under
+your paddle hand: hold the trigger (or grip), swing and let go; twist your wrist
+as you let go to hook it (Settings: aim help and throw power, with a log of
+your last balls). On a screen, move along the foul line, press, drag up the
+screen and let go: the length and speed of the drag is the pace, its lean the
+line and its curve the hook, with a dotted preview. `src/bowling/lane.js`
+(sizes), `rules.js` (frames, strikes, spares, the tenth frame, running totals,
+marks), `physics.js` (the ball slides through the oil then hooks; pins are discs
+that fall when hit hard enough and sweep their neighbours as they topple; tuned
+so a hooked pocket hit strikes about 3 times in 4 and a head-on hit leaves a
+split), `robots.js` (each robot's speed, hook and wobble; it tries lines into the
+pocket and at spares on a copy of the pins: Rookie averages about 100, Chopper
+170, Omega 237; `node dev/bowling-balance.mjs`) and `game.js` (the lane, the
+pinsetter, the robot's approach, the scoreboard, cameras). In VR you step aside
+while the robot bowls. Tested in `tests/bowling.test.mjs`.
 
 **The menu shows the sport you pick**: with Darts or Mini Golf picked, the hall
 behind the menu shows the darts stage or the course's first hole (no table), the
