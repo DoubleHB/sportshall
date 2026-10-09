@@ -10,6 +10,13 @@ export const CUP_START = 301;
 // Legs per round: quarter-finals and semi-finals one leg, the final best of three.
 export const ROUND_LEGS = [1, 1, 3];
 
+// The darts ladder: a match against each robot in turn (Rookie first, Omega
+// last), getting longer as they get better. The finish is your Match tab setting.
+export const DARTS_LADDER = [
+  { start: 301, legs: 1 }, { start: 301, legs: 1 }, { start: 301, legs: 3 },
+  { start: 501, legs: 3 }, { start: 501, legs: 3 }, { start: 501, legs: 3 },
+];
+
 // Robot a v robot b. Returns { winner, score: [{ a, b }] } (legs won).
 export function simulateMatch(a, b, { legs = 1, doubleOut = false, start = CUP_START, rng = Math.random } = {}) {
   const ids = [a, b];

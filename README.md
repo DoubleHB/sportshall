@@ -38,7 +38,15 @@ Trickshot; fewest strokes goes through, and a tie goes to sudden death on the
 course's last hole. Robot-v-robot rounds can be watched (both robots putt it
 out: the golf game takes up to two robots, `S.bots`, the second being the
 exhibition robot) or played out from each robot's usual scores
-(`simulateRound` in `src/golf/ai.js`). `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
+(`simulateRound` in `src/golf/ai.js`). **With a friend** (hosting, Cup tab:
+"Start a cup with ..."): as in bowling, you and your friend go in opposite
+halves; your friend putts their rounds from their screen (`gputt`, sent for
+whichever player they are) while you watch, and every cup round shows on their
+screen, robots and all (the snapshot carries each robot's spot, facing, putter
+head and look; the host relays what they say as `say`). **Mini golf ladder**
+(Mini Golf > Ladder): a round against each robot in turn, the first three on
+Classic and the last three on Trickshot (`GOLF_LADDER`); a tie goes to sudden
+death; beat Omega to be champion. `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
 walls, bumpers, slopes, windmill gate, cup, putter contact; tested in
 `tests/golf.test.mjs`) and `src/golf/game.js` (visuals, turns, scorecard).
 
@@ -63,7 +71,14 @@ Around the Clock (fewest darts), Count-up (8 visits) and Free throw.
 quarter-finals and semi-finals are one leg of 301, the final best of three, with
 your finish setting. Watch the robot matches (two robots at the oche) or skip them
 (`src/darts/cup.js` plays a skipped match out dart by dart with the robots' real
-throwing). **Darts with a friend** (Darts > Friend): host as below, then "Start
+throwing). With a friend connected, "Start a cup with ..." puts the two of you in
+opposite halves: their matches are thrown from their screen while you watch,
+and every cup match is played on both screens the same way as darts with a
+friend (below), robots included; each screen gets its own wording of the result
+(`dnote`). **Darts ladder** (Darts > Ladder): a match against each robot in
+turn, getting longer as they get better (301 one leg up to 501 best of three:
+`DARTS_LADDER`), with your finish setting; beat Omega to be darts champion.
+**Darts with a friend** (Darts > Friend): host as below, then "Start
 darts together" plays the game picked on the Match tab (Killer with 3 or 4
 players adds one or two robots: their darts are thrown on the host's game and
 sent like everyone else's; on the friend's screen a robot holds its dart up until
@@ -139,6 +154,13 @@ behind the first tee, so pressing Play doesn't move you again (`menuScene()` in
 main.js, `darts.preview` / `golf.preview`). At the oche the menu sits a little
 lower so the board shows above it. In VR you hold a dart in the Darts menu (and
 when you pause a darts game), and just the controller in the Mini Golf menu.
+
+**Watching robots faster**: when you watch robots play (a table tennis
+exhibition, or a robot-v-robot game in any cup), it can go at 2× or 4×: the ⏩
+button at the top right of the screen, the F key, your free hand's trigger in
+VR, or the speed choice on the Cup tab (and the Watch page) while it's on. The
+game just runs that much further each frame (`gameSpeed()` in main.js); a
+friend watching with you sees it at the same speed.
 
 Robots celebrate (fist pumps, spins, dances, sulks), talk in speech bubbles with
 beeps or a real voice (Settings > Robot talk), and confetti flies when you win.

@@ -119,6 +119,11 @@ export function simulateRound(a, b, holes, rng = Math.random) {
 }
 // Which course each round of the golf cup is played on.
 export const CUP_COURSES = ['classic', 'classic', 'trick'];
+// The golf ladder: a round against each robot in turn, the first three on
+// Classic, the last three on Trickshot.
+export const GOLF_LADDER = ['classic', 'classic', 'classic', 'trick', 'trick', 'trick'];
+// What a robot usually goes round in (for the menu): par plus its usual strokes over a hole.
+export const usualRound = (id, holes) => Math.round(holes.reduce((t, h) => t + h.par + (GOLF_BIAS[id] ?? 0.5), 0));
 
 // ---------------------------------------------------------------- talk --
 // Moments: start; the robot's own hole: ace, under (birdie or better), par,

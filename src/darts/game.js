@@ -311,8 +311,9 @@ export function createDarts(ctx) {
     const robot = r => ({ name: r.name, kind: 'robot', rival: r, flight: r.look.accent });
     if (R) {
       S.players = R.names.map((name, i) => (i === R.me ? person('You', i) : { name, kind: 'remote', flight: FLIGHTS[i] }));
-      // Killer with a friend can have robots in it too (the host throws their darts).
-      if (S.mode === 'killer' && opts.rivals?.length) S.players.push(...opts.rivals.map(robot));
+      // Killer with a friend can have robots in it too (the host throws their
+      // darts), and so can a cup match with a friend (theirs, yours, or two robots').
+      if (opts.rivals?.length) S.players.push(...opts.rivals.map(robot));
     }
     else if (opts.robotsOnly) S.players = opts.robotsOnly.map(robot);
     else if (S.mode === 'killer') {
@@ -327,9 +328,9 @@ export function createDarts(ctx) {
       S.players = [person('You', 0)];
       S.game = S.mode === 'atc' ? new AroundClock() : S.mode === 'count' ? new CountUp(8) : null;
     }
-    // Chopper's darts are blue like yours: then yours are pink.
-    const you = S.players.find(isYou);
-    if (you && robots().some(r => r.flight === you.flight)) you.flight = 0xff4fa3;
+    // Chopper's darts are blue like yours: then yours are pink (and a friend's
+    // too, on both screens).
+    for (const p of S.players) if (p.kind !== 'robot' && robots().some(r => r.flight === p.flight)) p.flight = 0xff4fa3;
     root.visible = true;
     // A robot model for each robot, waiting its turn.
     ctx.robots.forEach(m => { m.root.visible = false; });
@@ -611,12 +612,12 @@ export function createDarts(ctx) {
     // (A cup match: what the result means, shown after the usual banner.)
     const note = ctx.onResult?.({ winner: g.winner, legsWon: [...g.legsWon] });
     if (note) later(2.8, () => showBanner(note.title, note.sub, note.colour, 3.4));
-    if (robots().length === 2) {
-      // Two robots (a cup match you watched).
+    if (!S.players.some(p => p.kind === 'you')) {
+      // A match you watched: two robots, or (a cup with a friend) your friend's.
       showBanner(`${win.name} wins!`, `Legs ${g.legsWon[g.winner]}–${g.legsWon[1 - g.winner]}`, hexStr(win.flight), 5);
-      win.model.celebrate('dance'); lose.model.celebrate('slump');
-      later(1.0, () => talk('win', true, win));
-      later(3.6, () => talk('pWin', true, lose));
+      win.model?.celebrate('dance'); lose.model?.celebrate('slump');
+      if (win.kind === 'robot') later(1.0, () => talk('win', true, win));
+      if (lose.kind === 'robot') later(3.6, () => talk('pWin', true, lose));
       sfx.play('fanfare'); ctx.cheer(2);
     } else if (rp) {
       const you = win.kind === 'you', D = stats.darts;

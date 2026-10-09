@@ -196,3 +196,19 @@ test('golf cup: robot rounds played out quickly favour the better robot, ties go
   assert.ok(ties > 10, `${ties} playoffs`);
   assert.deepEqual(CUP_COURSES, ['classic', 'classic', 'trick']);
 });
+
+test('golf ladder: Classic then Trickshot, each robot usually better than the last', async () => {
+  const { GOLF_LADDER, usualRound } = await import('../src/golf/ai.js');
+  const { RIVALS } = await import('../src/rivals.js');
+  assert.equal(GOLF_LADDER.length, RIVALS.length);
+  assert.ok(GOLF_LADDER.every(id => COURSES[id]));
+  // Along the ladder, on the same course, each robot goes round in fewer (or as few) strokes.
+  for (let i = 1; i < RIVALS.length; i++) {
+    if (GOLF_LADDER[i] !== GOLF_LADDER[i - 1]) continue;
+    const holes = COURSES[GOLF_LADDER[i]].holes;
+    assert.ok(usualRound(RIVALS[i].id, holes) <= usualRound(RIVALS[i - 1].id, holes), RIVALS[i].id);
+  }
+  // Rookie is well over par on Classic; Omega under par on Trickshot.
+  assert.ok(usualRound('rookie', HOLES) > coursePar(HOLES) + 4);
+  assert.ok(usualRound('omega', TRICK) < coursePar(TRICK));
+});

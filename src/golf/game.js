@@ -311,15 +311,16 @@ export function createGolf(ctx) {
 
   // players: a number (pass the controls round) or a list of names (an empty
   // list: just robots, to watch). me: which player is on this screen (null when
-  // everyone shares it). rival: a robot character to play the round too (it
-  // putts last on each hole), or a list of two (a cup match between robots).
-  // cup: a cup match ({ label }): a tie goes to sudden death on the last hole.
+  // everyone shares it; -1: none, you're watching your friend's cup round). rival:
+  // a robot character to play the round too (it putts last on each hole), or a
+  // list of two (a cup match between robots).
+  // cup: a cup or ladder match ({ label }): a tie goes to sudden death on the last hole.
   function start(players = 1, courseId = 'classic', me = null, rival = null, cup = null) {
     useCourse(courseId);
     const names = Array.isArray(players) ? players
       : Array.from({ length: players }, (_, i) => (players === 1 ? 'You' : `Player ${i + 1}`));
     S.players = names.map(name => ({ name, scores: [] }));
-    S.me = names.length === 1 ? 0 : me;
+    S.me = me ?? (names.length === 1 ? 0 : null);
     S.remote = false;
     S.cup = cup; S.playoff = 0;
     S.hole = 0; S.timers = [];
@@ -329,7 +330,7 @@ export function createGolf(ctx) {
     if (cup) {
       // A cup match: say which, then the first hole.
       S.ball = null; S.phase = 'between'; showHole(0);
-      showBanner(cup.label, `${S.players.map((p, i) => nameOf(i)).join(' v ')} · ${course.name}, ${holes.length} holes`, '#d4af37', 3);
+      announce({ k: 'cup', label: cup.label, p: 0 });
       later(3.2, startHole);
     } else startHole();
     S.bots.forEach((B, k) => later((cup ? 3.6 : 1.2) + k * 2.4, () => talk(B, 'start', true)));
@@ -366,10 +367,20 @@ export function createGolf(ctx) {
   // Every announcement goes through here, so a friend's screen can show the
   // same moment worded for them (see remoteAnnounce).
   function announce(ev) {
-    if (!S.remote) { ctx.onAnnounce?.(ev); robotReact(ev); }
-    const h = holes[ev.hole ?? S.hole];
+    if (!S.remote) ctx.onAnnounce?.(ev);
+    robotReact(ev);        // (on a friend's screen they celebrate, but the host has them talk)
+    const h = holes[ev.hole ?? S.hole] ?? holes[0];
     const solo = S.players.length === 1;
     switch (ev.k) {
+      case 'cup':
+        showBanner(String(ev.label), `${S.players.map((p, i) => nameOf(i)).join(' v ')} · ${course.name}, ${holes.length} holes`, '#d4af37', 3);
+        break;
+      // What a cup or ladder result means, worded for the host and for the friend.
+      case 'note': {
+        const n = S.remote ? ev.friend : ev.host;
+        if (n && typeof n.title === 'string') showBanner(n.title, String(n.sub ?? ''), String(n.colour ?? '#d4af37'), 3.4);
+        break;
+      }
       case 'hole':
         showBanner(`Hole ${ev.hole + 1}: ${h.name}`, `Par ${h.par}${solo ? '' : ` · ${possOf(ev.p)} turn`}`, '#2fb8ff', 3);
         break;
@@ -410,7 +421,7 @@ export function createGolf(ctx) {
           // (A robot beating people is a groan; watching two robots, it's just a win.)
           const watching = S.players.every(p => p.kind === 'robot');
           const robotWon = !watching && winners.length === 1 && S.players[winners[0]].kind === 'robot';
-          showBanner(title, `${S.players.map((p, i) => `${nameOf(i)} ${totals[i]}`).join(' · ')}${ev.playoff ? ` · won on the ${ordinalWord(ev.playoff)} playoff hole` : ''}${ev.isBest ? ' · your new best!' : ''}`, robotWon ? '#ff9a5a' : '#d4af37', 5);
+          showBanner(title, `${S.players.map((p, i) => `${nameOf(i)} ${totals[i]}`).join(' · ')}${ev.playoff ? ` · won on the ${ordinalWord(ev.playoff)} playoff hole` : ''}${ev.isBest && !S.remote ? ' · your new best!' : ''}`, robotWon ? '#ff9a5a' : '#d4af37', 5);
           if (robotWon) sfx.play('groan');
           else { sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2); }
           if (S.me != null && S.me === winners[0] && S.bots.length) ctx.confetti?.({ x: 0, y: 0.5, z: 0 });
@@ -436,8 +447,8 @@ export function createGolf(ctx) {
     S.aim.set(h.cup[0] - h.tee[0], h.cup[1] - h.tee[1]).normalize();
     if (S.turn === 0) announce({ k: 'hole', hole: S.hole, p: 0 });
     if (myTurn()) goToBall();
-    // In VR, step back to watch the robot (it putts from where you stood).
-    else if (robotTurn() && ctx.isXR()) watchRobot();
+    // In VR, step back to watch the robot or your friend (they putt from where you stood).
+    else if (ctx.isXR() && (robotTurn() || S.me != null)) watchRobot();
     drawCard();
   }
   // A metre behind the tee, on the scorecard's side, looking down the hole.
@@ -487,6 +498,15 @@ export function createGolf(ctx) {
   const _rv = new THREE.Vector3(), _rg = new THREE.Vector3(), _rx = new THREE.Vector3(), _ry = new THREE.Vector3(), _rz = new THREE.Vector3(), _rm = new THREE.Matrix4();
   function robotUpdate(dt) { for (const B of S.bots) robotStep(B, dt); }
   function robotStep(B, dt) {
+    // A friend's screen: where the host's round has the robot.
+    if (S.remote) {
+      const r = S.rPose?.[B.k];
+      if (Array.isArray(r) && r.length >= 7 && r.every(Number.isFinite)) {
+        B.pos.x = r[0]; B.pos.z = r[1]; B.th = r[2]; B.head = r[3] > 9 ? null : r[3];
+        B.dir = { x: r[4], z: r[5] }; B.lookCup = !!r[6];
+      }
+      return poseBot(B, dt);
+    }
     const b = S.ball, h = holeNow();
     const mine = player() === B.p && S.phase !== 'between' && S.phase !== 'done';
     // Where it putts from: side-on to the putt line, the hole on its left.
@@ -545,8 +565,16 @@ export function createGolf(ctx) {
       if (B.step === 'read' || B.step === 'walk') head = there ? -0.04 : null;
     } else if (mine && B.step === 'finish' && B.t < 0.7) { B.t += dt; head = 0.18; }
     if (B.step !== 'through') B.hit = false;
-
-    // Pose the model: its root turned to face B.th, its body over B.pos.
+    B.head = head;
+    B.dir = d ?? { x: -Math.sin(B.th), z: -Math.cos(B.th) };
+    B.lookCup = B.step === 'read';
+    poseBot(B, dt);
+  }
+  // Pose the model: its root turned to face B.th, its body over B.pos, the
+  // putter head at B.head along B.dir (null: hanging), looking at the hole
+  // (B.lookCup) or the ball. (The friend's screen gets these from the host.)
+  function poseBot(B, dt) {
+    const b = S.ball, h = holeNow(), head = B.head ?? null;
     const s = Math.sin(B.th), c = Math.cos(B.th);
     B.model.root.rotation.y = B.th;
     B.model.root.position.set(B.pos.x - 2.22 * s, 0, B.pos.z - 2.22 * c);
@@ -557,7 +585,7 @@ export function createGolf(ctx) {
     B.bot.pad.x = -k;          // its left (the putt's way) is local -x
     B.bot.mood *= Math.pow(0.5, dt);
     // Look: at the hole while reading, the ball while putting, the ball rolling after.
-    const lookAt = B.step === 'read' ? _rv.set(h.cup[0], 0, h.cup[1]) : b ? _rv.set(b.x, 0.05, b.z) : _rv.set(h.cup[0], 0, h.cup[1]);
+    const lookAt = B.lookCup || !b ? _rv.set(h.cup[0], 0, h.cup[1]) : _rv.set(b.x, 0.05, b.z);
     B.model.headPos(_rg);
     const lx = lookAt.x - _rg.x, lz = lookAt.z - _rg.z;
     lookAt.set(_rg.x + lx * c - lz * s, lookAt.y, _rg.z + lx * s + lz * c);     // into the root's turned frame
@@ -566,7 +594,7 @@ export function createGolf(ctx) {
     // The putter: from its hand down to the head (on the floor behind the ball
     // when putting, hanging otherwise), face square to the line.
     B.model.handPos(_rg);
-    const dd = d ?? { x: -s, z: -c };
+    const dd = B.dir ?? { x: -s, z: -c };
     if (head != null && b) _rv.set(b.x + dd.x * head, 0.03, b.z + dd.z * head);
     else _rv.set(_rg.x - s * 0.12, _rg.y - SHAFT, _rg.z - c * 0.12);
     _rz.subVectors(_rg, _rv).normalize();
@@ -591,7 +619,8 @@ export function createGolf(ctx) {
     const h = holes[ev.hole ?? S.hole], who = S.players[ev.p];
     // (Two robots don't talk over each other: the other one waits a moment.)
     const lag = ev.k === 'round' ? k * 2 : who === B.p ? 0 : 1.6;
-    const later = (sec, fn) => S.timers.push({ t: S.t + sec + lag, fn });
+    // (Its words come from the host on a friend's screen: only its moves here.)
+    const later = (sec, fn) => { if (!S.remote) S.timers.push({ t: S.t + sec + lag, fn }); };
     if (ev.k === 'hazard' && who === B.p) { later(0.8, () => talk(B, 'splash')); B.model.celebrate('droop'); }
     else if (ev.k === 'sunk' || ev.k === 'pickup') {
       const diff = ev.score - h.par;
@@ -686,9 +715,10 @@ export function createGolf(ctx) {
     const low = Math.min(...deciding), leaders = deciding.map((v, i) => i).filter(i => deciding[i] === low);
     const winner = leaders.length === 1 ? leaders[0] : null;
     let isBest = false, best = null;
-    // Your best: when you're the only person playing (a robot or not).
+    // Your best: when you're the only person playing (a robot or not), and it's you
+    // (not your friend's cup round, which you watch).
     const people = S.players.filter(p => p.kind !== 'robot');
-    if (people.length === 1 && !S.remote) {
+    if (people.length === 1 && !S.remote && S.players.indexOf(people[0]) === S.me) {
       const you = S.players.indexOf(people[0]);
       stats.golfBests ??= {};
       best = stats.golfBests[course.id] ?? null;
@@ -707,10 +737,11 @@ export function createGolf(ctx) {
     }
     announce({ k: 'round', totals, isBest, best, winner, playoff: S.playoff });
     drawCard();
-    // A cup match: what the result means (shown after the usual banner).
+    // A cup or ladder match: what the result means (shown after the usual banner),
+    // worded for you and (playing a cup together) for your friend.
     if (S.cup && !S.remote) {
       const note = ctx.onRoundResult?.({ totals, winner, po: S.playoff ? S.players.map(p => p.po.reduce((a, b) => a + b, 0)) : null });
-      if (note) later(2.8, () => showBanner(note.title, note.sub, note.colour, 3.4));
+      if (note) later(2.8, () => announce({ k: 'note', host: note.host ?? note, friend: note.friend ?? null }));
     }
     later(5.5, () => ctx.roundOver?.());
   }
@@ -803,6 +834,8 @@ export function createGolf(ctx) {
       course: course.id, hole: S.hole, turn: S.turn, phase: S.phase, strokes: S.strokes, t: +S.t.toFixed(3),
       ball: b && [+b.x.toFixed(4), +b.z.toFixed(4), +(b.y || 0).toFixed(4), +b.vx.toFixed(3), +b.vz.toFixed(3), (b.sunk ? 1 : 0) | (b.hidden ? 2 : 0) | (b.hazard ? 4 : 0)],
       scores: S.players.map(p => p.scores),
+      // The robots: where they stand and face, the putter head, where they look.
+      r: S.bots.map(B => [B.pos.x, B.pos.z, B.th, B.head ?? 99, B.dir?.x ?? 0, B.dir?.z ?? -1, B.lookCup ? 1 : 0].map(v => +v.toFixed(3))),
     };
   }
   // Host: a putt from the friend's screen, if it's their turn and the ball is still.
@@ -814,12 +847,14 @@ export function createGolf(ctx) {
     onPutt(sp);
     return true;
   }
-  // Friend: start watching the host's round. names as the host has them; me = our index.
-  function startRemote(courseId, names, me) {
+  // Friend: start watching the host's round. names: the people as the host has
+  // them; me = our index (-1: we're watching); rivals: the robots putting too.
+  function startRemote(courseId, names, me, rivals = []) {
     useCourse(courseId);
     S.players = names.map(name => ({ name, scores: [] }));
-    S.me = me; S.remote = true; S.timers = []; S.hole = -1; S.phase = 'idle';
-    clearRobots(); S.cup = null; S.playoff = 0;
+    S.me = me; S.remote = true; S.timers = []; S.hole = -1; S.phase = 'idle'; S.rPose = null;
+    S.cup = null; S.playoff = 0;
+    setUpRobots(rivals);
     endPreview();
     root.visible = true;
   }
@@ -835,6 +870,7 @@ export function createGolf(ctx) {
     const [x, z, y, vx, vz, f] = m.ball ?? [0, 0, 0, 0, 0, 0];
     S.ball = Object.assign(S.ball ?? GP.makeGolfBall(x, z), { x, z, y, vx, vz, sunk: !!(f & 1), hidden: !!(f & 2), hazard: f & 4 ? 'yes' : null, moving: m.phase === 'rolling' });
     m.scores.forEach((sc, i) => { if (S.players[i]) S.players[i].scores = sc; });
+    S.rPose = Array.isArray(m.r) ? m.r : null;
     if (turnChanged || S._lastDrawn !== `${m.hole}${m.turn}${m.strokes}${m.phase}`) { S._lastDrawn = `${m.hole}${m.turn}${m.strokes}${m.phase}`; drawCard(); }
   }
 
@@ -870,7 +906,7 @@ export function createGolf(ctx) {
     if (paused) { tracker.invalidate(); return; }
     S.t += dt;
     // A friend's screen only draws what the host sends.
-    if (S.remote) { drawBall(dt); if (!xr) screenCamera(dt, false); drawAim(); return; }
+    if (S.remote) { drawBall(dt); robotUpdate(dt); if (!xr) screenCamera(dt, false); drawAim(); return; }
     const due = S.timers.filter(t => t.t <= S.t);
     if (due.length) { S.timers = S.timers.filter(t => t.t > S.t); due.forEach(t => t.fn()); }
     // The robot's turn, ball still: its next putt.
@@ -965,7 +1001,8 @@ export function createGolf(ctx) {
     get courseId() { return course.id; },
     get players() { return S.players.map(p => p.name); },
     snapshot, remotePutt, startRemote, applyRemote,
-    remoteAnnounce(ev) { announce(ev); },
+    remoteAnnounce(ev) { if (ev && typeof ev.k === 'string' && (ev.p == null || S.players[ev.p])) announce(ev); },
+    myTurn,
     makePutter,
     stop() { endPreview(); clearRobots(); root.visible = false; S.phase = 'idle'; S.timers = []; S.drag = null; aimArrow.visible = aimDots.visible = false; },
     update, goToBall, pointerDown, pointerMove, pointerUp, drawCard,

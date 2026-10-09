@@ -381,3 +381,33 @@ test('robots finish legs of 301 in a sensible number of darts', () => {
     }
   }
 });
+
+test('darts ladder: six matches that get longer, against robots that get better', async () => {
+  const { DARTS_LADDER } = await import('../src/darts/cup.js');
+  const { RIVALS } = await import('../src/rivals.js');
+  assert.equal(DARTS_LADDER.length, RIVALS.length);
+  const length = f => f.start * f.legs;
+  for (let i = 1; i < RIVALS.length; i++) {
+    assert.ok(length(DARTS_LADDER[i]) >= length(DARTS_LADDER[i - 1]), `match ${i + 1}`);
+    assert.ok(DART_AVG[RIVALS[i].id] > DART_AVG[RIVALS[i - 1].id], RIVALS[i].id);
+  }
+  assert.ok(DARTS_LADDER.every(f => [301, 501].includes(f.start) && [1, 3].includes(f.legs)));
+});
+
+test('darts cup with a friend: a robot-v-robot match is played out; you and your friend are kept apart', () => {
+  const rng = rng32(5);
+  const cup = newCup(rng, 'Sam');
+  assert.equal(cup.friend, 'Sam');
+  const firstRound = cup.rounds[0];
+  const half = i => (i < 2 ? 0 : 1);
+  const youAt = firstRound.findIndex(m => m.a === YOU || m.b === YOU), friendAt = firstRound.findIndex(m => m.a === 'friend' || m.b === 'friend');
+  assert.notEqual(half(youAt), half(friendAt));
+  // The other matches are robots only: simulated with the robots' real throwing.
+  for (const m of firstRound) {
+    if ([m.a, m.b].some(id => id === YOU || id === 'friend')) continue;
+    const q = simulateMatch(m.a, m.b, { legs: 1, rng });
+    assert.ok([m.a, m.b].includes(q.winner));
+    record(cup, 0, firstRound.indexOf(m), q.winner, q.score);
+  }
+  assert.equal(nextMatch(cup).r, 0);
+});
