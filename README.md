@@ -102,6 +102,27 @@ pocket and at spares on a copy of the pins: Rookie averages about 100, Chopper
 170, Omega 237; `node dev/bowling-balance.mjs`) and `game.js` (the lane, the
 pinsetter, the robot's approach, the scoreboard, cameras). In VR you step aside
 while the robot bowls. Tested in `tests/bowling.test.mjs`.
+**Bowling cup** (Bowling > Cup): the same eight-player draw; quarter-finals and
+semi-finals are a 5-frame game, the final a full 10 frames, no bumpers. Most pins
+goes through; a tie goes to a roll-off (one ball each at a full rack, again if
+it's level). Robot-v-robot games are played out from each robot's usual bowling
+(`src/bowling/cup.js`: `BOWL_FORM` is each robot's first-ball pins and spare
+rate, measured from the real thing; bowling every ball with the physics and the
+robots' line search would take several seconds on a headset).
+**Spare practice** (Bowling > Practice): eight common leaves (the 10 pin, the 7,
+6-10, 3-6-10, the bucket, the 5, the 3-10 baby split and the 7-10) set up on
+their own (`src/bowling/practice.js`). A spare round is ten of them, one ball
+each (best kept), or pick one and bowl at it as often as you like; your made /
+tried for each is kept, the card shows the leave as a pin chart and a tip.
+Aim help nudges a near miss at a spare towards the pins left, not the pocket.
+**Bowling with a friend** (Bowling > Friend): host as below, then "Bowl
+together": you, your friend and the robot picked on the Play tab take turns.
+The host's game runs everything and streams it (`bowl.snapshot()` every other
+frame: phase, frames, the ball, fallen pins, the robot's pose); what happens
+goes out as events (`bev`) that each screen words for its own player. The friend
+drags their ball on their own screen and it's sent to the host (`bshot`), whose
+game bowls it. In VR the friend appears waiting by the ball return and steps up
+to the line for their ball, and you step aside for it.
 
 **The menu shows the sport you pick**: with Darts or Mini Golf picked, the hall
 behind the menu shows the darts stage or the course's first hole (no table), the

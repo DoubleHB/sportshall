@@ -5,6 +5,8 @@ import { Bowling, runningTotals, marks, frameDone, standingFor } from '../src/bo
 import { PIN_SPOTS, LANE } from '../src/bowling/lane.js';
 import { simulate, rack } from '../src/bowling/physics.js';
 import { aimFor, robotShot, planShot } from '../src/bowling/robots.js';
+import { quickGame, quickCupGame, rollOff, BOWL_FORM } from '../src/bowling/cup.js';
+import { SPARES, spareRound, ROUND_SPARES } from '../src/bowling/practice.js';
 import { rng32 } from './sim.mjs';
 
 const play = (rolls, players = 1, frames = 10) => { const g = new Bowling({ players, frames }); rolls.forEach(p => g.roll(p)); return g; };
@@ -89,4 +91,42 @@ test('robot bowlers: Omega outscores Rookie, and goes for the spare it has', () 
   assert.ok(omega > rookie, `omega ${omega} rookie ${rookie}`);
   // A lone 10 pin: Omega's plan takes it.
   assert.deepEqual(simulate([9], planShot('omega', [9], rng)).down, [9]);
+});
+
+test('bowling cup: quick games score like the robots do, the better robot usually wins, ties go to a roll-off', () => {
+  const rng = rng32(9);
+  const avg = id => { let s = 0; for (let k = 0; k < 200; k++) s += quickGame(id, 10, rng).score; return s / 200; };
+  const rookie = avg('rookie'), chopper = avg('chopper'), omega = avg('omega');
+  assert.ok(rookie > 75 && rookie < 125, `rookie ${rookie}`);
+  assert.ok(omega > 190 && omega < 240, `omega ${omega}`);
+  assert.ok(rookie < chopper && chopper < omega);
+  assert.ok(Object.keys(BOWL_FORM).length === 7);
+  let omegaWins = 0;
+  for (let k = 0; k < 100; k++) {
+    const q = quickCupGame('omega', 'rookie', 5, rng);
+    if (q.winner === 'omega') omegaWins++;
+    assert.ok(q.score[0].a !== q.score[0].b || q.score.length === 2);
+  }
+  assert.ok(omegaWins > 85, `omega won ${omegaWins}/100`);
+  // A roll-off goes on until the balls differ.
+  const balls = [[9, 9], [7, 8]];
+  let i = 0;
+  const ro = rollOff(() => balls[i][0], () => balls[i++][1]);
+  assert.deepEqual([ro.a, ro.b], [7, 8]);
+  assert.deepEqual(ro.score, { a: 16, b: 17 });
+});
+
+test('spare practice: a round has ten spares, no 7-10 twice, and Omega can pick up the makeable ones', () => {
+  const rng = rng32(12);
+  for (let k = 0; k < 20; k++) {
+    const r = spareRound(rng);
+    assert.equal(r.length, ROUND_SPARES);
+    assert.ok(r.filter(id => id === '7-10').length <= 1);
+    assert.ok(r.every((id, j) => j === 0 || id !== r[j - 1]));
+  }
+  // Every spare but the 7-10: Omega's line (no wobble) clears it.
+  for (const s of SPARES.filter(s => s.id !== '7-10')) {
+    const down = simulate(s.pins, planShot('omega', s.pins, rng)).down;
+    assert.deepEqual([...down].sort(), [...s.pins].sort(), `${s.name}: ${down}`);
+  }
 });

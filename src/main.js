@@ -28,10 +28,12 @@ import { GOLF_FORM, simulateRound, CUP_COURSES } from './golf/ai.js';
 import { createDarts, DARTS_VIEW } from './darts/game.js';
 import { createBowling, BOWL_VIEW } from './bowling/game.js';
 import { BOWL_STYLE } from './bowling/robots.js';
+import { BOWL_CUP_FRAMES, quickCupGame } from './bowling/cup.js';
+import { SPARES, ROUND_SPARES } from './bowling/practice.js';
 import { DART_AVG } from './darts/robots.js';
 import { simulateMatch, ROUND_LEGS, CUP_START } from './darts/cup.js';
 
-export const VERSION = '0.15.0';
+export const VERSION = '0.16.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -70,7 +72,9 @@ try { dcupSaved = JSON.parse(localStorage.getItem('sh_dcup') || 'null'); } catch
 let gcupSaved = null;     // and the mini golf cup
 try { gcupSaved = JSON.parse(localStorage.getItem('sh_gcup') || 'null'); } catch { /* none */ }
 stats.golfCups ??= 0;
-stats.bowling = { games: 0, high: 0, strikes: 0, wins: 0, losses: 0, beaten: [], ...(stats.bowling || {}) };
+stats.bowling = { games: 0, high: 0, strikes: 0, wins: 0, losses: 0, beaten: [], cups: 0, spares: {}, spareBest: 0, ...(stats.bowling || {}) };
+let bcupSaved = null;     // and the bowling cup
+try { bcupSaved = JSON.parse(localStorage.getItem('sh_bcup') || 'null'); } catch { /* none */ }
 function load(key, def) { try { return { ...def, ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return { ...def }; } }
 function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 const ASSIST = { off: 0, light: 0.55, full: 1 };
@@ -157,7 +161,10 @@ const G = {
   dcupRef: null,         // { r, i, youA, watch }: the darts cup match on now
   gcup: gcupSaved,       // the mini golf cup bracket, or null
   gcupRef: null,         // { r, i, youA }: the golf cup round on now
+  bcup: bcupSaved,       // the bowling cup bracket, or null
+  bcupRef: null,         // { r, i, youA }: the bowling cup game on now
   dartsFriend: false,    // playing darts with the friend you're hosting
+  bowlFriend: false,     // bowling with them
   shareNote: '',
   view: null,            // where VR puts you (null = behind your end of the table)
   inXR: false,
@@ -183,7 +190,7 @@ function runTimers() {
 // Sounds also go to a connected friend.
 function sound(kind, p = null, s = 1) {
   sfx.play(kind, p, s);
-  if (G.role === 'host' && (G.mode === 'versus' || G.golfFriend)) send({ t: 'sfx', k: kind, p: p && [p.x, p.y, p.z], s });
+  if (G.role === 'host' && (G.mode === 'versus' || G.golfFriend || G.bowlFriend)) send({ t: 'sfx', k: kind, p: p && [p.x, p.y, p.z], s });
 }
 function send(msg) { G.net?.link?.send(msg); }
 
@@ -321,7 +328,7 @@ darts = createDarts({
 // Bowling, the fourth sport: a lane down the hall; the robot bowls on it too.
 bowl = createBowling({
   scene, camera, raycaster, settings, stats, save,
-  sfx: { play: (k, p, s) => sfx.play(k, p, s) },
+  sfx: { play: (k, p, s) => sound(k, p, s) },      // heard on a friend's screen too
   showBanner: (...a) => showBanner(...a), setView: v => setView(v),
   isXR: () => G.inXR,
   get robot() { return W.robot; },
@@ -331,7 +338,19 @@ bowl = createBowling({
   cheer: a => W.crowd.cheer(a),
   confetti: p => confetti.burst(p, 220, 0.9),
   lastResult: text => { G.bowlResult = text; },
-  onOver: () => { G.mode = 'menu'; openMenu('bowl'); },
+  // kind: 'play' | 'cup' | 'practice' (the friend's screen waits for the host).
+  onOver: kind => {
+    if (G.role === 'guest') return;
+    if (G.bowlFriend) { send({ t: 'bend' }); G.bowlFriend = false; }
+    G.mode = 'menu';
+    openMenu(kind === 'cup' ? 'bcup' : kind === 'practice' ? 'bpractice' : G.role === 'host' ? 'friend' : 'bowl');
+  },
+  // A cup game is over: record it (returns a banner saying what it means).
+  onCupResult: res => bowlCupResult(res),
+  // Playing a friend: tell them what happened (they word it for themselves),
+  // and send their ball to the host.
+  onAnnounce: ev => { if (G.role === 'host' && G.bowlFriend) send({ t: 'bev', ev }); },
+  remoteShot: shot => G.net?.link?.send({ t: 'bshot', ...shot }),
 });
 const bubble = createBubble(scene);
 const trophy = buildTrophy();
@@ -339,7 +358,7 @@ const trophy = buildTrophy();
 // the table, the darts stage, and not behind a scoreboard from your end, the
 // oche or the courtside seats.
 trophy.root.position.set(3.3, 0, -1.6);
-trophy.root.visible = !!stats.ladder.champion || stats.cups > 0 || stats.darts.cups > 0 || stats.golfCups > 0;
+trophy.root.visible = !!stats.ladder.champion || stats.cups > 0 || stats.darts.cups > 0 || stats.golfCups > 0 || stats.bowling.cups > 0;
 scene.add(trophy.root);
 // The friend you host, at the far end, and the host as seen by a guest.
 const friendAvatar = buildHuman({ shirt: 0xff7a1a, hair: 0x6b3a1e });
@@ -531,12 +550,12 @@ function renderMenu(ui) {
   const honours = golfing
     ? [stats.golfCups && `🏆 ${stats.golfCups} cup${stats.golfCups > 1 ? 's' : ''}`, stats.golfBests[gc.id] && `${gc.name} best: ${stats.golfBests[gc.id]} (par ${coursePar(gc.holes)})`].filter(Boolean).join('   ')
     : darting ? [D.cups && `🏆 ${D.cups} cup${D.cups > 1 ? 's' : ''}`, D.beaten.length && `🎯 ${D.beaten.length}/${RIVALS.length} robots beaten`, D.n180 && `${D.n180} × 180`].filter(Boolean).join('   ')
-    : bowling ? [stats.bowling.high && `High game ${stats.bowling.high}`, stats.bowling.beaten.length && `🎳 ${stats.bowling.beaten.length}/${RIVALS.length} robots beaten`].filter(Boolean).join('   ')
+    : bowling ? [stats.bowling.cups && `🏆 ${stats.bowling.cups} cup${stats.bowling.cups > 1 ? 's' : ''}`, stats.bowling.high && `High game ${stats.bowling.high}`, stats.bowling.beaten.length && `🎳 ${stats.bowling.beaten.length}/${RIVALS.length} robots beaten`].filter(Boolean).join('   ')
       : [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
   if (honours) ui.text(honours, w - 60, 140, { size: 30, weight: 800, color: '#d4af37', align: 'right' });
   const tabs = golfing ? [['golf', 'Play'], ['gcup', 'Cup'], ['friend', 'Friend'], ['settings', 'Settings']]
     : darting ? [['darts', 'Match'], ['dcup', 'Cup'], ['dpractice', 'Practice'], ['friend', 'Friend'], ['dsettings', 'Settings']]
-    : bowling ? [['bowl', 'Play'], ['bsettings', 'Settings']]
+    : bowling ? [['bowl', 'Play'], ['bcup', 'Cup'], ['bpractice', 'Practice'], ['friend', 'Friend'], ['bsettings', 'Settings']]
       : [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
   const tw = (w - 120 - (tabs.length - 1) * 14) / tabs.length;
   const parentTab = { watch: 'match', feel: 'settings', share: 'settings', lessons: 'practice' }[G.tab] ?? G.tab;
@@ -646,6 +665,26 @@ function renderMenu(ui) {
     label('Your last balls (for tuning)', 610);
     if (!log.length) dim('Bowl a few and they show here: speed, spin and aim help.', 660, 28);
     log.forEach((l, i) => dim(`${(l.speed).toFixed(1)} m/s · ${l.spin > 0.15 ? 'hook' : l.spin < -0.15 ? 'back-up' : 'straight'} (${l.spin.toFixed(2)}) · aim help ${Math.round(l.moved * 100)} cm`, 660 + i * 42, 28));
+  } else if (G.tab === 'bpractice') {
+    // Spare practice: a round of ten, or one leave over and over.
+    const B = stats.bowling, P = G.mode === 'bowl' && bowl.inProgress() ? bowl.state.practice : null, g = ui.g;
+    roundRect(g, L, 296, width, 150, 24);
+    g.fillStyle = P?.round ? '#17284a' : '#1b2438'; g.fill();
+    ui.text('Spare round', L + 34, 354, { size: 42, weight: 800 });
+    ui.text(`${ROUND_SPARES} spares, one ball at each: the common ones come up most.`, L + 34, 404, { size: 27, weight: 500, color: C.dim });
+    if (B.spareBest) ui.text(`Best: ${B.spareBest} of ${ROUND_SPARES}`, R - 290, 354, { size: 32, weight: 800, color: '#d4af37', align: 'right' });
+    ui.button('bprac:round', R - 250, 332, 220, 78, 'Start', { primary: true, size: 36 });
+    label('Or practise one spare, as many times as you like', 500);
+    const rows = [SPARES.slice(0, 4), SPARES.slice(4, 8)];
+    const cur = P && !P.round ? P.list[0] : null;
+    rows.forEach((row, k) => ui.options('bprac', L, 520 + k * 150, width, 130, row.map(s => {
+      const r = B.spares[s.id];
+      return [s.id, s.name, r?.tried ? `made ${r.made} of ${r.tried}` : 'not tried yet'];
+    }), cur));
+    dim('Each spare\'s tip shows as it comes up. Aim help (Settings) nudges a near miss towards the pins left.', 850, 27);
+    if (P) ui.button('resume', L, 890, width, 96, 'Resume', { primary: true, size: 42 });
+  } else if (G.tab === 'bcup') {
+    renderCup(ui, L, R, width, dim, 'bowl');
   } else if (G.tab === 'darts') {
     label('Opponent', 298);
     ui.options('dartsOpp', L, 316, width, 112, [...RIVALS.map(r => [r.id, r.name, D.beaten.includes(r.id) ? '✓ beaten' : `averages ${DART_AVG[r.id]}`]), ['local', '2 players', 'take turns']], settings.dartsOpp, 10);
@@ -774,11 +813,12 @@ function renderMenu(ui) {
       const gcName = (GOLF_COURSES[settings.golfCourse] ?? GOLF_COURSES.classic).name;
       const what = golfing ? `Mini golf: the ${gcName} course, taking turns (set on the Play tab)`
         : darting ? `Darts: ${dartsGameName()}${friendRobotsText()} (set on the Match tab)`
-          : `Match length: ${settings.games === 1 ? '1 game' : `best of ${settings.games}`} (set on the Match tab)`;
+          : bowling ? `Bowling: ${settings.bowlFrames} frames${RIVALS.find(r => r.id === settings.bowlRobot) ? `, with ${rivalById(settings.bowlRobot).name}` : ''}${settings.bowlBumpers ? ', bumpers up' : ''} (set on the Play tab)`
+            : `Match length: ${settings.games === 1 ? '1 game' : `best of ${settings.games}`} (set on the Match tab)`;
       ui.text(what, w / 2, 715, { size: 28, weight: 500, color: C.dim, align: 'center' });
-      const inVersus = (G.mode === 'versus' && G.match && !G.match.over) || (G.mode === 'golf' && G.golfFriend && golf.inProgress()) || (G.mode === 'darts' && G.dartsFriend && darts.inProgress());
+      const inVersus = (G.mode === 'versus' && G.match && !G.match.over) || (G.mode === 'golf' && G.golfFriend && golf.inProgress()) || (G.mode === 'darts' && G.dartsFriend && darts.inProgress()) || (G.mode === 'bowl' && G.bowlFriend && bowl.inProgress());
       if (inVersus) ui.button('resume', L, 760, width / 2 - 10, 110, 'Resume', { primary: true, size: 46 });
-      else ui.button(golfing ? 'golfversus' : darting ? 'dartsversus' : 'versus', L, 760, width / 2 - 10, 110, golfing ? 'Start a round together' : darting ? 'Start darts together' : 'Start match', { primary: !!n.friend, disabled: !n.friend, size: golfing || darting ? 38 : 44 });
+      else ui.button(golfing ? 'golfversus' : darting ? 'dartsversus' : bowling ? 'bowlversus' : 'versus', L, 760, width / 2 - 10, 110, golfing ? 'Start a round together' : darting ? 'Start darts together' : bowling ? 'Bowl together' : 'Start match', { primary: !!n.friend, disabled: !n.friend, size: golfing || darting ? 38 : 44 });
       ui.button('unhost', L + width / 2 + 10, 760, width / 2 - 10, 110, 'Stop hosting', { size: 40 });
     }
   } else if (G.tab === 'settings') {
@@ -845,17 +885,20 @@ function renderMenu(ui) {
 const entrantName = id => (id === YOU ? 'You' : rivalById(id).name);
 const entrantColour = id => (id === YOU ? '#7fd1ff' : hex(rivalById(id).look.accent));
 
-// The table tennis cup, the darts cup or the mini golf cup (kind 'tt' |
-// 'darts' | 'golf'): the same draw, the same buttons with 'cup:', 'dcup:' or 'gcup:'.
+// The table tennis cup, the darts cup, the mini golf cup or the bowling cup
+// (kind 'tt' | 'darts' | 'golf' | 'bowl'): the same draw, the same buttons with
+// 'cup:', 'dcup:', 'gcup:' or 'bcup:'.
 function renderCup(ui, L, R, width, dim, kind = 'tt') {
-  const dartsCup = kind === 'darts', golfCup = kind === 'golf';
-  const cup = { tt: G.cup, darts: G.dcup, golf: G.gcup }[kind], g = ui.g, k = { tt: 'cup', darts: 'dcup', golf: 'gcup' }[kind];
-  const won = { tt: stats.cups, darts: stats.darts.cups, golf: stats.golfCups }[kind];
+  const dartsCup = kind === 'darts', bowlCup = kind === 'bowl', golfCup = kind === 'golf' || bowlCup;   // (bowling's works like golf's)
+  const cup = { tt: G.cup, darts: G.dcup, golf: G.gcup, bowl: G.bcup }[kind], g = ui.g, k = { tt: 'cup', darts: 'dcup', golf: 'gcup', bowl: 'bcup' }[kind];
+  const won = { tt: stats.cups, darts: stats.darts.cups, golf: stats.golfCups, bowl: stats.bowling.cups }[kind];
   if (!cup) {
     dim('Eight players, one cup: you and seven robots in a knockout.', 300);
-    dim(golfCup ? 'Quarter-finals and semi-finals are a round of Classic; the final is a round of Trickshot.'
+    dim(bowlCup ? `Quarter-finals and semi-finals are a ${BOWL_CUP_FRAMES[0]}-frame game; the final is a full ${BOWL_CUP_FRAMES[2]} frames.`
+      : golfCup ? 'Quarter-finals and semi-finals are a round of Classic; the final is a round of Trickshot.'
       : dartsCup ? `Quarter-finals and semi-finals are one leg of ${CUP_START}; the final is best of three legs.` : 'Quarter-finals and semi-finals are one game to 11; the final is best of three.', 345);
-    dim(golfCup ? 'Fewest strokes goes through; a tie goes to sudden death on the last hole. The robots\' matches are played out for you.'
+    dim(bowlCup ? 'Most pins goes through; a tie goes to a roll-off (one ball each). The robots\' games are played out for you.'
+      : golfCup ? 'Fewest strokes goes through; a tie goes to sudden death on the last hole. The robots\' matches are played out for you.'
       : dartsCup ? `You only play your own matches; watch the robot matches or skip them. Finish: ${settings.dartsFinish === 'double' ? 'double out' : 'any finish'} (Match tab).`
         : 'You only play your own matches; watch the robot matches or skip them.', 390);
     ui.text(won ? `Cups won: ${won}` : 'No cups yet.', L, 470, { size: 40, weight: 800, color: won ? '#d4af37' : C.text });
@@ -872,7 +915,8 @@ function renderCup(ui, L, R, width, dim, kind = 'tt') {
   // The bracket: quarter-finals, semi-finals, final.
   const cols = [L, L + 480, L + 960], bw = 420, bh = 100;
   const ys = [[345, 480, 615, 750], [412, 682], [547]];
-  (golfCup ? ['Quarter-finals (Classic)', 'Semi-finals (Classic)', 'Final (Trickshot)'] : ['Quarter-finals', 'Semi-finals', dartsCup ? 'Final (best of 3 legs)' : 'Final (best of 3)'])
+  (bowlCup ? BOWL_CUP_FRAMES.map((f, r) => `${['Quarter-finals', 'Semi-finals', 'Final'][r]} (${f} frames)`)
+    : golfCup ? ['Quarter-finals (Classic)', 'Semi-finals (Classic)', 'Final (Trickshot)'] : ['Quarter-finals', 'Semi-finals', dartsCup ? 'Final (best of 3 legs)' : 'Final (best of 3)'])
     .forEach((t, r) => ui.text(t, cols[r], 334, { size: 24, weight: 700, color: C.dim }));
   g.strokeStyle = '#3a4866'; g.lineWidth = 3;
   for (let r = 0; r < 2; r++) ys[r].forEach((y, i) => {
@@ -893,7 +937,7 @@ function renderCup(ui, L, R, width, dim, kind = 'tt') {
       ui.text(entrantName(id), x + 52, ty + 10, { size: 30, weight: m.winner === id ? 800 : 600, color: lost ? '#6b7896' : '#fff' });
       if (m.score) {
         const mine = s => (k === 'a' ? s.a : s.b), theirs = s => (k === 'a' ? s.b : s.a);
-        // (Golf: strokes for the round; a playoff shows after it.)
+        // (Golf: strokes for the round, a playoff after it; bowling: pins, and a roll-off.)
         const shown = golfCup ? `${mine(m.score[0])}${m.score[1] ? ` (${mine(m.score[1])})` : ''}`
           : m.score.length === 1 ? mine(m.score[0]) : m.score.filter(s => mine(s) > theirs(s)).length;
         ui.text(String(shown), x + bw - 24, ty + 10, { size: 32, weight: 800, align: 'right', color: lost ? '#6b7896' : '#ffd23f' });
@@ -903,16 +947,17 @@ function renderCup(ui, L, R, width, dim, kind = 'tt') {
 
   // What next.
   const y = 890;
-  const inCupMatch = golfCup ? G.mode === 'golf' && G.gcupRef && golf.inProgress()
+  const inCupMatch = bowlCup ? G.mode === 'bowl' && G.bcupRef && bowl.inProgress()
+    : golfCup ? G.mode === 'golf' && G.gcupRef && golf.inProgress()
     : dartsCup ? G.mode === 'darts' && G.dcupRef && darts.inProgress()
       : (G.mode === 'match' || G.mode === 'exhibition') && G.cupRef && G.match && !G.match.over;
-  if (inCupMatch) ui.button('resume', L, y, width - 320, 96, golfCup ? 'Resume the round' : 'Resume the match', { primary: true, size: 40 });
+  if (inCupMatch) ui.button('resume', L, y, width - 320, 96, bowlCup ? 'Resume the game' : golfCup ? 'Resume the round' : 'Resume the match', { primary: true, size: 40 });
   else if (!nx) ui.button(`${k}:new`, L, y, width - 320, 96, 'Start a new cup', { primary: true, size: 40 });
   else if (involvesYou(nx.m)) {
     const opp = nx.m.a === YOU ? nx.m.b : nx.m.a;
     ui.button(`${k}:play`, L, y, width - 320, 96, `Play ${entrantName(opp)} · ${ROUND_NAMES[nx.r]}`, { primary: true, size: 38 });
   } else if (golfCup) {
-    // (Robot rounds are played out for you: there's no watching two robots putt.)
+    // (Robot rounds are played out for you: there's no watching two robots putt or bowl.)
     const bw2 = (width - 320 - 20) / 2;
     ui.button(`${k}:skip`, L, y, bw2, 96, 'Play it out', { primary: true, size: 34 });
     ui.button(`${k}:skipall`, L + bw2 + 20, y, bw2, 96, out ? 'Play out the rest' : 'On to my match', { size: 32 });
@@ -1015,6 +1060,45 @@ function golfCupResult({ totals, winner, po }) {
     : { title: 'Out of the cup', sub: `Knocked out in the ${ROUND_NAMES[ref.r].toLowerCase()}`, colour: C.bad };
 }
 
+// --------------------------------------------------------- bowling cup --
+function saveBCup() { save('sh_bcup', G.bcup); }
+// Record a bowling cup result; true if you've just won the cup.
+function bcupRecord(r, i, winner, score) {
+  cupRecordResult(G.bcup, r, i, winner, score);
+  saveBCup();
+  if (G.bcup.champion !== YOU) return false;
+  stats.bowling.cups = (stats.bowling.cups ?? 0) + 1; save('sh_stats', stats);
+  trophy.root.visible = true;
+  return true;
+}
+function bcupSkip(all) {
+  let nx;
+  while ((nx = nextMatch(G.bcup)) && !involvesYou(nx.m)) {
+    const q = quickCupGame(nx.m.a, nx.m.b, BOWL_CUP_FRAMES[nx.r]);
+    bcupRecord(nx.r, nx.i, q.winner, q.score);
+    if (!all) { showBanner(`${entrantName(q.winner)} goes through`, `${entrantName(nx.m.a)} ${q.score[0].a} · ${entrantName(nx.m.b)} ${q.score[0].b}${q.score[1] ? ' · after a roll-off' : ''}`, entrantColour(q.winner), 3); break; }
+  }
+  if (G.bcup.champion && G.bcup.champion !== YOU) showBanner(`${entrantName(G.bcup.champion)} wins the cup`, '', hex(rivalById(G.bcup.champion).look.accent), 3);
+}
+function bcupPlayNext() {
+  const nx = nextMatch(G.bcup);
+  if (!nx || !involvesYou(nx.m)) return;
+  startBowling({ rival: rivalById(nx.m.a === YOU ? nx.m.b : nx.m.a), frames: BOWL_CUP_FRAMES[nx.r], label: `Cup ${ROUND_NAMES[nx.r].toLowerCase()}`, ref: { r: nx.r, i: nx.i, youA: nx.m.a === YOU } });
+}
+// The bowling game's cup game is over: record it and say what it means.
+// scores and rolloff (roll-off pins) are [you, the robot].
+function bowlCupResult({ scores, winner, rolloff }) {
+  const ref = G.bcupRef;
+  if (!ref) return null;
+  const cm = G.bcup.rounds[ref.r][ref.i];
+  const winId = winner === 0 ? YOU : (ref.youA ? cm.b : cm.a);
+  const side = ([y, o]) => (ref.youA ? { a: y, b: o } : { a: o, b: y });
+  const champs = bcupRecord(ref.r, ref.i, winId, [side(scores), ...(rolloff ? [side(rolloff)] : [])]);
+  if (champs) return { title: 'CUP WINNERS!', sub: 'You won the bowling cup', colour: '#d4af37' };
+  return winId === YOU ? { title: 'Through!', sub: `You're in the ${ROUND_NAMES[ref.r + 1].toLowerCase()}`, colour: C.good }
+    : { title: 'Out of the cup', sub: `Knocked out in the ${ROUND_NAMES[ref.r].toLowerCase()}`, colour: C.bad };
+}
+
 function saveCup() { save('sh_cup', G.cup); }
 
 // Record a cup result (score as games of { a, b } from the match's a side).
@@ -1106,6 +1190,14 @@ function onMenuClick(id) {
   }
   else if (k === 'darts') startDarts(v);
   else if (id === 'dartsversus') startDartsVersus();
+  else if (k === 'bcup') {
+    if (v === 'new') { G.bcup = newCup(); saveBCup(); }
+    else if (v === 'play') bcupPlayNext();
+    else if (v === 'skip') bcupSkip(false);
+    else if (v === 'skipall') bcupSkip(true);
+  }
+  else if (k === 'bprac') startBowlPractice(v);
+  else if (id === 'bowlversus') startBowlVersus();
   else if (k === 'gcup') {
     if (v === 'new') { G.gcup = newCup(); saveGCup(); }
     else if (v === 'play') gcupPlayNext();
@@ -1181,8 +1273,8 @@ function openMenu(tab) {
   if (tab) G.tab = tab;
   else if (G.sport === 'golf' && !['golf', 'gcup', 'friend', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
   else if (G.sport === 'darts' && !['darts', 'dcup', 'dpractice', 'friend', 'dsettings'].includes(G.tab)) G.tab = 'darts';
-  else if (G.sport === 'bowl' && !['bowl', 'bsettings'].includes(G.tab)) G.tab = 'bowl';
-  else if (G.sport === 'tt' && ['golf', 'gcup', 'darts', 'dcup', 'dpractice', 'dsettings', 'bowl', 'bsettings'].includes(G.tab)) G.tab = 'match';
+  else if (G.sport === 'bowl' && !['bowl', 'bcup', 'bpractice', 'friend', 'bsettings'].includes(G.tab)) G.tab = 'bowl';
+  else if (G.sport === 'tt' && ['golf', 'gcup', 'darts', 'dcup', 'dpractice', 'dsettings', 'bowl', 'bcup', 'bpractice', 'bsettings'].includes(G.tab)) G.tab = 'match';
   G.paused = true;
   menu.mesh.visible = true;
   menuScene();
@@ -1234,6 +1326,7 @@ function clearPlay() {
   friendAvatar.root.visible = false; friendDesk.outer.visible = false;
   // Back from mini golf: the table and its scoreboard return.
   if (G.golfFriend) { send({ t: 'gend' }); G.golfFriend = false; }
+  if (G.bowlFriend) { send({ t: 'bend' }); G.bowlFriend = false; }
   if (golf?.active || bowl?.active) {
     if (golf.active) golf.stop();
     if (bowl.active) { bowl.stop(); fitCamera(); placeBoards(); banner.mesh.scale.setScalar(1); }
@@ -1244,7 +1337,7 @@ function clearPlay() {
   }
   // Back from darts: the robot picks its paddle up again.
   if (G.dartsFriend) { send({ t: 'dend' }); G.dartsFriend = false; }
-  G.dcupRef = null; G.gcupRef = null;
+  G.dcupRef = null; G.gcupRef = null; G.bcupRef = null;
   if (darts?.active) {
     darts.stop(); attachHands();
     for (const r of [W.robot, robot2, robot3]) { r.showPaddle(true); r.root.position.set(0, 0, 0); }
@@ -1333,17 +1426,48 @@ function startGolf(players = settings.golfPlayers, me = null, cup = null) {
 }
 
 // Bowling: the people on the Play tab take turns, with the robot picked there.
-function startBowling() {
+// cup: a cup game { rival, frames, label, ref }; remote: a game with the friend
+// you're hosting { names, me, host }.
+function startBowling(cup = null, remote = null) {
+  clearPlay();
+  G.mode = 'bowl';
+  G.bcupRef = cup?.ref ?? null;
+  W.table.visible = false; W.robot.root.visible = false; scoreboard.mesh.visible = false;
+  desk.outer.visible = false;
+  setView(BOWL_VIEW);
+  closeMenu();
+  const rival = cup ? cup.rival : RIVALS.find(r => r.id === settings.bowlRobot) ?? null;
+  bowl.start(cup ? { players: 1, rival, frames: cup.frames, bumpers: false, cup: { label: cup.label } }
+    : { players: remote ? 2 : settings.bowlPlayers, rival, frames: settings.bowlFrames, bumpers: !!settings.bowlBumpers, remote });
+  bowlBegun();
+}
+function bowlBegun() {
+  attachHands();
+  serveButton(false);
+  if (!G.inXR) bowl.snapCamera();
+}
+// Spare practice (which: a spare's id, or 'round').
+function startBowlPractice(which) {
   clearPlay();
   G.mode = 'bowl';
   W.table.visible = false; W.robot.root.visible = false; scoreboard.mesh.visible = false;
   desk.outer.visible = false;
   setView(BOWL_VIEW);
   closeMenu();
-  bowl.start({ players: settings.bowlPlayers, rival: RIVALS.find(r => r.id === settings.bowlRobot) ?? null, frames: settings.bowlFrames, bumpers: !!settings.bowlBumpers });
-  attachHands();
-  serveButton(false);
-  if (!G.inXR) bowl.snapCamera();
+  bowl.startPractice(which);
+  bowlBegun();
+}
+// Bowling with the friend you're hosting: you're player 1, they're player 2,
+// with the robot picked on the Play tab if there is one.
+function startBowlVersus() {
+  if (!G.net?.friend) return;
+  const names = [HOST_NAME, G.net.friend.name];
+  startBowling(null, { names, me: 0, host: true });
+  G.bowlFriend = true;
+  friendAvatar.root.visible = true;
+  const o = bowl.state.opts;
+  send({ t: 'bstart', names, robot: o.rival?.id ?? null, frames: o.frames, bumpers: !!o.bumpers });
+  send({ t: 'bev', ev: { k: 'start' } });
 }
 
 // Mini golf with the friend you're hosting: you're player 1, they're player 2.
@@ -1984,7 +2108,7 @@ function friendLeft(reason) {
   const name = G.net.friend.name;
   G.net.friend = null;
   G.role = 'solo';
-  if (G.mode === 'versus' || G.golfFriend || G.dartsFriend) { G.golfFriend = false; G.dartsFriend = false; clearPlay(); G.mode = 'menu'; openMenu('friend'); }
+  if (G.mode === 'versus' || G.golfFriend || G.dartsFriend || G.bowlFriend) { G.golfFriend = false; G.dartsFriend = false; G.bowlFriend = false; clearPlay(); G.mode = 'menu'; openMenu('friend'); }
   showBanner(`${name} left`, reason, C.bad, 3);
   if (menu.mesh.visible) menu.redraw();
 }
@@ -2012,6 +2136,9 @@ function onGuestData(m) {
   } else if (m.t === 'dthrow') {
     // The friend's dart (where on the board they let go); we throw it for them.
     if (G.dartsFriend) darts.remoteThrow(m);
+  } else if (m.t === 'bshot') {
+    // The friend's ball (where they let it go, how fast, the hook); we bowl it for them.
+    if (G.bowlFriend) bowl.remoteShot(m);
   }
 }
 
@@ -2056,6 +2183,20 @@ function streamGolf() {
   send(msg);
 }
 
+// Bowling with a friend: the game as it is now, plus (in VR) your head and hand.
+function streamBowl() {
+  const msg = { t: 'b', s: bowl.snapshot(), paused: G.paused && bowl.inProgress() };
+  if (G.inXR && bowl.handRig.parent) {
+    const r = v => Math.round(v * 1000) / 1000;
+    const cam = renderer.xr.getCamera();
+    cam.getWorldPosition(_p); cam.getWorldQuaternion(_q);
+    msg.hh = [_p.x, _p.y, _p.z, _q.x, _q.y, _q.z, _q.w].map(r);
+    bowl.handRig.getWorldPosition(_p);
+    msg.hp = [_p.x, _p.y, _p.z].map(r);
+  }
+  send(msg);
+}
+
 function streamState() {
   if (G.role !== 'host') return;
   // 20 s of silence: they've gone (closing the page says goodbye straight away;
@@ -2063,6 +2204,7 @@ function streamState() {
   if (G.net?.friend && performance.now() - (G.net.heard ?? performance.now()) > NET_TIMEOUT) return friendLeft('Lost the connection');
   if (!G.net?.link?.connected || ++sendTick % 2) return;
   if (G.golfFriend) return streamGolf();
+  if (G.bowlFriend) return streamBowl();
   // Darts go one by one as they're thrown; between them, whether we've paused.
   // (Only while a game's going: once it's over the friend's screen plays out its last
   // darts and the result even if our menu is open. Leaving darts sends dend.)
@@ -2125,9 +2267,14 @@ function onHostData(m) {
     case 'full': showBanner('That game is full', 'Ask your friend for a new code', C.bad, 10); break;
     case 'bye': gs.ended = true; showBanner('The host stopped the game', 'Reload the page to join again', C.bad, 30); break;
     // Mini golf with the host: we're player 2 and only send our putts.
-    case 'gstart': if (G.mode === 'darts') guestDarts(false); guestGolf(true, m); break;
+    case 'gstart': if (G.mode === 'darts') guestDarts(false); if (G.mode === 'bowl') guestBowl(false); guestGolf(true, m); break;
     // Darts with the host: we're player 2; every dart comes from the host.
-    case 'dstart': guestDarts(true, m); break;
+    case 'dstart': if (G.mode === 'bowl') guestBowl(false); guestDarts(true, m); break;
+    // Bowling with the host: we're player 2; the host's game streams to us, we send our ball.
+    case 'bstart': guestBowl(true, m); break;
+    case 'b': if (G.mode === 'bowl') { bowl.applyRemote(m.s); gs.bowl = m; } break;
+    case 'bev': if (G.mode === 'bowl') bowl.remoteAnnounce(m.ev); break;
+    case 'bend': if (G.mode === 'bowl') { guestBowl(false); showBanner('Bowling over', 'Waiting for the host', C.accent2, 4); } break;
     case 'dart': if (G.mode === 'darts') darts.remoteDart(m); break;
     case 'dhb': gs.dartsPaused = !!m.paused; break;
     case 'dend': if (G.mode === 'darts') { guestDarts(false); showBanner('Darts over', 'Waiting for the host', C.accent2, 4); } break;
@@ -2177,6 +2324,7 @@ function guestDarts(on, m = {}) {
     // Killer can have up to two robots in it too (their darts come from the host).
     const robots = o.mode === 'killer' && Array.isArray(m.robots) ? m.robots.slice(0, 2).map(id => RIVALS.find(r => r.id === id)).filter(Boolean) : [];
     if (G.mode === 'golf') guestGolf(false);
+    if (G.mode === 'bowl') guestBowl(false);
     G.mode = 'darts';
     gs.dartsPaused = false;
     W.table.visible = false; scoreboard.mesh.visible = false; banner.mesh.visible = true;
@@ -2202,6 +2350,38 @@ function guestDarts(on, m = {}) {
   }
 }
 
+// The guest switching into (or out of) the host's bowling. The host's game
+// streams to us (with the robot, if there is one); we send our ball.
+function guestBowl(on, m = {}) {
+  const gs = G.guest;
+  if (on) {
+    if (!Array.isArray(m.names) || m.names.length !== 2) return;
+    if (G.mode === 'golf') guestGolf(false);
+    if (G.mode === 'darts') guestDarts(false);
+    G.mode = 'bowl';
+    gs.bowl = null;
+    W.table.visible = false; scoreboard.mesh.visible = false; banner.mesh.visible = true;
+    friendDesk.outer.visible = false; hostPaddle.group.visible = false; hostAvatar.root.visible = false; W.setBall(null);
+    bowl.start({
+      remote: { names: m.names.map(n => String(n).slice(0, 16)), me: 1, host: false },
+      rival: RIVALS.find(r => r.id === m.robot) ?? null, frames: m.frames === 5 ? 5 : 10, bumpers: !!m.bumpers,
+    });
+    bowl.snapCamera();
+    document.querySelector('#guest-hud .keys').textContent = isTouch() ? 'Slide to your spot, drag up the screen and lift your finger · curve it to hook' : 'Move along the line, press, drag up and let go · curve the drag to hook';
+  } else {
+    bowl.stop();
+    G.mode = 'menu';
+    W.table.visible = true; scoreboard.mesh.visible = true;
+    friendDesk.outer.visible = true; hostPaddle.group.visible = true; hostAvatar.root.visible = true;
+    // The robot goes (the friend's screen shows the host, not a robot, at the table).
+    W.robot.root.visible = false; W.robot.showPaddle(true); W.robot.root.position.set(0, 0, 0); W.robot.root.rotation.set(0, 0, 0);
+    G.speaker = null; bubble.hide();
+    banner.mesh.scale.setScalar(1);
+    document.querySelector('#guest-hud .keys').textContent = isTouch() ? 'Drag to move your paddle · tap Serve when it\'s your serve' : 'Mouse = paddle · Space = toss when serving';
+    fitCamera(); placeBoards(); resetDeskCamera();
+  }
+}
+
 // Banners from the guest's point of view (the guest is O).
 function guestMessage(m) {
   const host = G.guest.hostName;
@@ -2211,6 +2391,7 @@ function guestMessage(m) {
     case 'start':
       if (G.mode === 'golf') guestGolf(false);    // the host has switched back to table tennis
       if (G.mode === 'darts') guestDarts(false);
+      if (G.mode === 'bowl') guestBowl(false);
       showBanner(`You v ${host}`, m.first === O ? 'You serve first' : `${host} serves first`, C.accent, 2.4); break;
     case 'serve': showBanner(m.who === O ? (m.gp === O ? 'Game point' : 'Your serve') : `${host} to serve`, m.who === O ? tossHint() : '', C.accent2, 2.5); break;
     case 'let': showBanner('Let', 'It touched the net, serve again', C.accent2, 1.6); break;
@@ -2234,6 +2415,25 @@ function guestFrame(dt) {
       : gs.dartsPaused ? `${host} paused the game` : ph === 'aim' ? 'Your turn: point at the board, press, let go when it\'s steady'
         : ph === 'waiting' ? 'Throwing…' : ph === 'remote' ? `${host} is throwing`
           : ph === 'robot' ? `${darts.state.players[darts.state.game?.turn ?? 0]?.name ?? 'A robot'} is throwing` : `Playing ${host}`;
+    return;
+  }
+  if (G.mode === 'bowl') {
+    // Bowling: draw the host's game; our ball goes to the host.
+    const now = performance.now(), bm = gs.bowl;
+    if (now - (gs.lastSend ?? 0) > 1000) { gs.lastSend = now; G.net.link.send({ t: 'hb' }); }
+    if (!gs.ended && now - (gs.heard ?? now) > NET_TIMEOUT) { gs.ended = true; showBanner('Lost the host', 'Reload the page to join again', C.bad, 30); }
+    bowl.update(dt, { xr: false, paused: !!bm?.paused || !!gs.ended, holding: false });
+    // The host, when they're in VR: their head, and the ball in their hand.
+    hostAvatar.root.visible = !!bm?.hh;
+    if (bm?.hh) {
+      const [hx, hy, hz, qx, qy, qz, qw] = bm.hh, hp = { x: bm.hp[0], y: bm.hp[1], z: bm.hp[2] };
+      hostAvatar.set({ x: hx, y: hy, z: hz }, new THREE.Quaternion(qx, qy, qz, qw).multiply(FLIP), hp);
+      bowl.otherHand(hp);
+    } else bowl.otherHand(null);
+    const S = bowl.state, p = S.players[S.game?.turn ?? 0], host = gs.hostName;
+    document.getElementById('guest-status').textContent = gs.ended ? 'Disconnected' : bm?.paused ? `${host} paused the game` : S.phase === 'done' ? 'Game over: waiting for the host'
+      : S.phase === 'aim' && p?.kind === 'you' ? (S.sentAt ? 'Bowling…' : 'Your turn: move along the line, then drag up and let go')
+        : p?.kind === 'robot' ? `${p.name} is bowling` : `${host} is bowling`;
     return;
   }
   if (G.mode === 'golf') {
@@ -2531,6 +2731,14 @@ function onFrame(t, frame, render = true) {
         const flick = f.since < 0.35, armY = f.up ? (flick ? 1.72 : 1.64) : 1.0, armZ = f.up ? (flick ? -0.38 : -0.12) : -0.08;
         friendAvatar.set({ x: f.pos.x, y: 1.62, z: f.pos.z }, _cq.setFromAxisAngle(new V3(0, 1, 0), Math.PI), { x: f.pos.x + 0.22, y: armY, z: f.pos.z + armZ });
       }
+    } else if (friendAvatar.root.visible && G.bowlFriend) {
+      // Bowling: your friend waits by the ball return, then steps up to the line,
+      // and their arm follows through once the ball's away.
+      const f = bowl.friend;
+      if (f) {
+        const armY = f.thrown ? 1.3 : f.up ? 0.72 : 0.95, armZ = f.thrown ? -0.45 : -0.08;
+        friendAvatar.set({ x: f.pos.x, y: 1.62, z: f.pos.z }, _cq.setFromAxisAngle(new V3(0, 1, 0), Math.PI), { x: f.pos.x + 0.2, y: armY, z: f.pos.z + armZ });
+      }
     } else if (friendAvatar.root.visible) {
       friendPaddle.group.getWorldPosition(_hp);
       const hx = friendDesk.target.x * 0.55;
@@ -2670,7 +2878,7 @@ menu.mesh.visible = false;
 // Handy for testing from the console.
 window.__sh = {
   debugXR: () => ({ needRecentre, tablePose: { ...tablePose }, hasBase: !!baseSpace, custom: renderer.xr.getReferenceSpace() !== baseSpace }),
-  get golf() { return golf; }, startGolf, get darts() { return darts; }, startDarts, get bowl() { return bowl; }, startBowling,
+  get golf() { return golf; }, startGolf, get darts() { return darts; }, startDarts, get bowl() { return bowl; }, startBowling, startBowlPractice, startBowlVersus, bcupPlayNext,
   G, PH, desk, friendDesk, sfx, advance, settings, stats, W, startMatch, startPractice, startVersus, startHosting, openMenu, closeMenu, toss, pose,
   ctrls, renderer, camera, scene, menu, onMenuClick, enterXR, robotSay, burst, rivalById, startGuest,
 };
