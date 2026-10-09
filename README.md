@@ -72,7 +72,8 @@ behind the menu shows the darts stage or the course's first hole (no table), the
 far wall's sign says DARTS or MINI GOLF, and in VR you're moved to the oche or
 behind the first tee, so pressing Play doesn't move you again (`menuScene()` in
 main.js, `darts.preview` / `golf.preview`). At the oche the menu sits a little
-lower so the board shows above it.
+lower so the board shows above it. In VR you hold a dart in the Darts menu (and
+when you pause a darts game), and just the controller in the Mini Golf menu.
 
 Robots celebrate (fist pumps, spins, dances, sulks), talk in speech bubbles with
 beeps or a real voice (Settings > Robot talk), and confetti flies when you win.

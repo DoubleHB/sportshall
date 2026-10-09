@@ -1147,7 +1147,8 @@ export function createDarts(ctx) {
     if (!xr) screenCamera(dt, paused);
     placeBoards(xr);
     card.mesh.visible = xr || !paused;      // on a screen, out of the menu's way
-    if (paused) { handRig.visible = false; screenDart.visible = false; crosshair.visible = false; aimDot.visible = false; S.hold = null; S.press = null; return; }
+    // (Paused in VR, the dart stays in your hand: it can't be thrown from the menu.)
+    if (paused) { handRig.visible = !!xr; screenDart.visible = false; crosshair.visible = false; aimDot.visible = false; S.hold = null; S.press = null; return; }
     // Out of a Killer game against robots: they play it out a bit quicker.
     if (S.mode === 'killer' && S.phase !== 'done' && !S.players.some((p, i) => p.kind === 'you' && S.game.alive(i))) dt *= 1.7;
     S.t += dt;
@@ -1207,11 +1208,13 @@ export function createDarts(ctx) {
     stop() { stopAll(); S.preview = false; root.visible = false; S.phase = 'idle'; S.mode = null; },
     // The menu's view (darts picked, no game on): the stage, empty. mr: no wall.
     preview(on, mr = false) {
-      if (!on) { if (S.preview) { S.preview = false; root.visible = false; } return; }
+      if (!on) { if (S.preview) { S.preview = false; root.visible = false; handRig.visible = false; } return; }
       if (root.visible && !S.preview) return;    // a game is on
       stopAll();
       S.preview = true; S.phase = 'idle'; S.mode = null;
       card.mesh.visible = false; pop.mesh.visible = false; wall.visible = !mr;
+      // A dart in your hand (in VR) while you pick the game.
+      recolour(handRig, YOU_FLIGHT); handRig.visible = true;
       root.visible = true;
     },
     update, pointerDown, pointerMove, pointerUp,

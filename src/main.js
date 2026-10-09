@@ -28,7 +28,7 @@ import { createDarts, DARTS_VIEW } from './darts/game.js';
 import { DART_AVG } from './darts/robots.js';
 import { simulateMatch, ROUND_LEGS, CUP_START } from './darts/cup.js';
 
-export const VERSION = '0.12.0';
+export const VERSION = '0.12.1';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -219,18 +219,21 @@ function attachHands() {
   // stopping golf or darts but before the mode changes, and the paddle has to
   // come back.)
   const putting = !!golf?.active && G.inXR && !!pc;
-  // Darts in VR: a dart sticks out of the front of the paddle hand's controller.
-  const darting = !!darts?.active && G.inXR && !!pc;
+  // Darts in VR: a dart sticks out of the front of the paddle hand's controller
+  // (in the Darts menu too).
+  const darting = !!(darts?.active || darts?.state.preview) && G.inXR && !!pc;
+  // The Mini Golf menu: just the controller (a putter would poke through the menu).
+  const bare = !!golf?.state.preview && G.inXR && !!pc;
   golf?.putterRig.removeFromParent();
   darts?.handRig.removeFromParent();
   if (putting) { paddleRig.removeFromParent(); pc.ray.add(golf.putterRig); }
   else if (darting) { paddleRig.removeFromParent(); pc.ray.add(darts.handRig); }
   else {
-    if (G.inXR && pc) pc.grip.add(paddleRig);
+    if (G.inXR && pc && !bare) pc.grip.add(paddleRig);
     else if (!G.inXR) desk.inner.add(paddleRig);
     else paddleRig.removeFromParent();
   }
-  for (const c of ctrls) c.model.visible = c !== pc || putting || darting;
+  for (const c of ctrls) c.model.visible = c !== pc || putting || darting || bare;
   applyAngle();
 }
 attachHands();
@@ -1055,6 +1058,7 @@ function menuScene() {
   darts.preview(s === 'darts', G.mr);
   golf.preview(s === 'golf' ? settings.golfCourse : null);
   W.table.visible = scoreboard.mesh.visible = W.robot.root.visible = desk.outer.visible = s === 'tt';
+  attachHands();      // a dart in your hand for darts, the paddle for table tennis
   if (G.inXR) setView(s === 'darts' ? DARTS_VIEW : s === 'golf' ? (golfViews[settings.golfCourse] ??= golf.previewView()) : null);
 }
 
@@ -1086,6 +1090,7 @@ function clearPlay() {
   W.table.visible = true; scoreboard.mesh.visible = true;
   setView(null);
   if (G.mode === 'exhibition') { G.mode = 'menu'; placeBoards(); }   // the boards come back from the courtside spots
+  attachHands();      // the paddle (a menu's dart or bare controller included)
   serveButton(true);
 }
 // The touch screen's Serve button is only for table tennis.
