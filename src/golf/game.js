@@ -295,6 +295,7 @@ export function createGolf(ctx) {
     players: [], hole: 0, turn: 0, strokes: 0, ball: null, ph: null, t: 0,
     phase: 'idle',     // idle | aim | rolling | between | done
     drag: null, aim: new THREE.Vector2(0, -1), timers: [], camT: null,
+    log: [],           // your last VR putts, for Settings (putt power)
   };
   const later = (sec, fn) => S.timers.push({ t: S.t + sec, fn });
 
@@ -330,6 +331,7 @@ export function createGolf(ctx) {
     if (cup) {
       // A cup match: say which, then the first hole.
       S.ball = null; S.phase = 'between'; showHole(0);
+      if (ctx.isXR()) setView(previewView());       // behind the first tee while the banner's up
       announce({ k: 'cup', label: cup.label, p: 0 });
       later(3.2, startHole);
     } else startHole();
@@ -496,7 +498,8 @@ export function createGolf(ctx) {
   }
   const READ = 1.2, ADDRESS = 0.6, BACK = 0.5, THROUGH = 0.16;
   const _rv = new THREE.Vector3(), _rg = new THREE.Vector3(), _rx = new THREE.Vector3(), _ry = new THREE.Vector3(), _rz = new THREE.Vector3(), _rm = new THREE.Matrix4();
-  function robotUpdate(dt) { for (const B of S.bots) robotStep(B, dt); }
+  // (Not before there's a hole: a friend's screen gets one with the host's first snapshot.)
+  function robotUpdate(dt) { if (holeNow()) for (const B of S.bots) robotStep(B, dt); }
   function robotStep(B, dt) {
     // A friend's screen: where the host's round has the robot.
     if (S.remote) {
@@ -785,7 +788,12 @@ export function createGolf(ctx) {
       g.fillStyle = '#ffd23f'; g.fillText(total ? String(total) : '–', w - 85, y);
     });
     g.textAlign = 'left'; g.fillStyle = C.dim; g.font = `500 26px ${FONT}`;
-    g.fillText(ctx.isXR() ? 'Swing the putter · free hand trigger: go to your ball · X/Y: menu' : 'Drag back from the ball and let go to putt · Esc: menu', 40, h - 40);
+    // (Watching robots: how to speed them up; watching a friend: just the menu.)
+    const robotsOnly = !S.remote && S.players.length > 0 && S.players.every(p => p.kind === 'robot');
+    const watching = !S.players.some((p, i) => p.kind !== 'robot' && (S.me == null || S.me === i));
+    g.fillText(robotsOnly ? (ctx.isXR() ? 'Watching · free hand trigger: faster · X/Y: menu' : 'Watching · ⏩ or F: faster · Esc: menu')
+      : watching ? (ctx.isXR() ? 'Watching · X/Y: menu' : 'Watching · Esc: menu')
+        : ctx.isXR() ? 'Swing the putter · free hand trigger: go to your ball · X/Y: menu' : 'Drag back from the ball and let go to putt · Esc: menu', 40, h - 40);
     card.flush();
   }
 
@@ -918,8 +926,16 @@ export function createGolf(ctx) {
     for (let i = 1; i <= n; i++) {
       const tt = S.t - dt + h * i;
       if (S.phase === 'aim' && tracker.valid && myTurn()) {
-        const sp = GP.putterContact(S.ball, tracker.substep((i - 1) / n, i / n));
-        if (sp > 0) onPutt(sp);
+        const pad = tracker.substep((i - 1) / n, i / n);
+        const sp = GP.putterContact(S.ball, pad);
+        if (sp > 0) {
+          // Settings > Putt power: if real swings come out short (or long).
+          const v = Math.min(GP.MAX_PUTT, sp * (settings.golfPower ?? 1)), b = S.ball, l = Math.hypot(b.vx, b.vz) || 1;
+          b.vx *= v / l; b.vz *= v / l;
+          S.log.push({ swing: Math.hypot(pad.vel.x, pad.vel.z), speed: v, result: null });
+          if (S.log.length > 8) S.log.shift();
+          onPutt(v);
+        }
       }
       // A sitting ball can still be knocked by a slider or spinner (no stroke counted).
       if ((S.phase === 'aim' || S.phase === 'robot') && (S.ph.hole.sliders || S.ph.hole.spinners)) {
@@ -939,8 +955,10 @@ export function createGolf(ctx) {
           else if (e.type === 'pipe') sfx.play('net', pos, 0.8);
           else if (e.type === 'pipeOut') sfx.play('clack', pos, 0.6);
           else if (e.type === 'hazard') onHazard(e.kind, xr);
-          else if (e.type === 'cup') { sfx.play('cup', { x: S.ball.x, y: 0, z: S.ball.z }); finishTurn(true); }
+          else if (e.type === 'cup') { logResult('holed'); sfx.play('cup', { x: S.ball.x, y: 0, z: S.ball.z }); finishTurn(true); }
           else if (e.type === 'stop') {
+            const h = holeNow();
+            logResult(`stopped ${Math.round(Math.hypot(h.cup[0] - S.ball.x, h.cup[1] - S.ball.z) * 100)} cm from the hole`);
             if (S.strokes >= MAX_STROKES) finishTurn(false);
             else {
               S.phase = 'aim'; drawCard();
@@ -956,6 +974,12 @@ export function createGolf(ctx) {
     drawBall(dt);
     drawAim();
     if (!xr) screenCamera(dt, false);
+  }
+
+  // How your last VR putt ended, for the log on the Settings page.
+  function logResult(text) {
+    const l = S.log[S.log.length - 1];
+    if (l && !l.result && myTurn()) l.result = text;
   }
 
   // Ball: sinks out of sight once it's in (or in the water, or in a pipe).
@@ -994,6 +1018,7 @@ export function createGolf(ctx) {
     get active() { return root.visible && !S.preview; },
     get phase() { return S.phase; },
     get state() { return S; },
+    get log() { return S.log; },
     start(players, courseId, me, rival, cup) { start(players, courseId, me, rival, cup); },
     // The menu's view of a course (null: put it away), and where to stand for it.
     preview(courseId) { if (courseId) preview(courseId); else endPreview(); },

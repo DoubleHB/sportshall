@@ -19,8 +19,9 @@ import { CanvasBoard, roundRect, FONT, C } from '../panel.js';
 
 // Where you stand: on the approach, a step behind the foul line.
 export const BOWL_VIEW = { x: LANE.x, z: LANE.foulZ + 1.0, th: 0, lift: 0 };
-// Where a robot waits its turn (a second one, when you watch two, a step behind).
-const WAITS = [{ x: LANE.x - 1.35, z: LANE.foulZ + 1.1 }, { x: LANE.x - 1.5, z: LANE.foulZ + 2.1 }];
+// Where a robot waits its turn (a second one, when you watch two, a step further
+// along): out to the left, clear of where you watch from (WATCH_VIEW) and of the lane.
+const WAITS = [{ x: LANE.x - 2.4, z: LANE.foulZ - 0.6 }, { x: LANE.x - 2.7, z: LANE.foulZ - 1.6 }];
 const FRIEND_WAIT = { x: LANE.x + 1.0, z: LANE.foulZ + 0.5 };   // and a friend (in front of the ball return)
 const BALL_STATES = ['lane', 'gutter', 'pit', 'gone'];
 // In VR, where you watch the robot's ball from (it bowls from where you stand).

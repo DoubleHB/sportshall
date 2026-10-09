@@ -11,6 +11,9 @@ import { CanvasBoard, roundRect, FONT, C } from '../panel.js';
 
 // Where you stand: just behind the line, facing the board.
 export const DARTS_VIEW = { x: 0, z: OCHE_Z + 0.3, th: 0, lift: 0 };
+// Watching a match you're not in (VR): a step back and to the right, looking at
+// the board, clear of the robots throwing and waiting on the left.
+export const DARTS_WATCH = { x: 0.6, z: OCHE_Z + 1.2, th: 0.167, lift: 0 };
 // Aim help in VR: how far a throw is pulled towards where the dart was pointing
 // as you aimed (k), for throws that land within `reach` of it. Wild throws stay wild.
 const ASSIST = { off: { k: 0, reach: 0 }, light: { k: 0.4, reach: 0.15 }, full: { k: 0.75, reach: 0.3 } };
@@ -458,7 +461,7 @@ export function createDarts(ctx) {
     return true;
   }
   // On a friend's screen the robots' darts are the host's to decide.
-  const hostThrows = () => !!S.opts.remote && !S.opts.remote.host;
+  const hostThrows = () => !!S.opts?.remote && !S.opts.remote.host;
 
   function land(d) {
     const o = d.out, at = o.at, v = velAt(d.v0, o.t), speed = Math.hypot(v.x, v.y, v.z);
@@ -1160,7 +1163,11 @@ export function createDarts(ctx) {
     }
     g.textAlign = 'left'; g.fillStyle = '#55627e'; g.font = `500 24px ${FONT}`;
     const touch = window.matchMedia?.('(pointer: coarse)').matches;
-    g.fillText(ctx.isXR() ? 'Hold the trigger, throw, let go · X/Y: menu' : touch ? 'Touch the board to aim, hold still, lift your finger to throw' : 'Point at the board, press, let go when it\'s steady · Esc: menu', 44, h - 34);
+    // (Watching robots: how to speed them up; watching a friend: just the menu.)
+    const robotsOnly = S.players.every(p => p.kind === 'robot'), watching = !S.players.some(p => p.kind === 'you');
+    g.fillText(robotsOnly && !hostThrows() ? (ctx.isXR() ? 'Watching · free hand trigger: faster · X/Y: menu' : touch ? 'Watching · ⏩: faster' : 'Watching · ⏩ or F: faster · Esc: menu')
+      : watching ? (ctx.isXR() ? 'Watching · X/Y: menu' : touch ? 'Watching' : 'Watching · Esc: menu')
+        : ctx.isXR() ? 'Hold the trigger, throw, let go · X/Y: menu' : touch ? 'Touch the board to aim, hold still, lift your finger to throw' : 'Point at the board, press, let go when it\'s steady · Esc: menu', 44, h - 34);
     card.flush();
   }
 
