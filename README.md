@@ -31,7 +31,13 @@ milliseconds a frame, and keeps the one that still works when it wobbles), stand
 side-on and swings a putter. Its wobble sets how good it is: Rookie about 7 over
 par, Chopper about 2 over, Omega about 3 under (`src/golf/ai.js`; the full
 balance run is `node dev/golf-balance.mjs`). In VR you step back behind the tee
-to watch its putts. Wins and losses against robots are kept. `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
+to watch its putts. Wins and losses against robots are kept. **Mini golf cup**
+(Mini Golf > Cup): the same eight-player draw as the other cups; quarter-finals
+and semi-finals are a round of Classic against a robot, the final a round of
+Trickshot; fewest strokes goes through, and a tie goes to sudden death on the
+course's last hole. Robot-v-robot rounds are played out from each robot's
+usual scores (`simulateRound` in `src/golf/ai.js`: putting them all out would
+take half a minute on a headset). `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
 walls, bumpers, slopes, windmill gate, cup, putter contact; tested in
 `tests/golf.test.mjs`) and `src/golf/game.js` (visuals, turns, scorecard).
 

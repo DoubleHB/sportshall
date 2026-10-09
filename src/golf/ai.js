@@ -94,6 +94,32 @@ export function playHole(hole, id, rng = Math.random) {
   return MAX_STROKES + 1;
 }
 
+// ------------------------------------------------- robot v robot, quickly --
+// A cup match between two robots you don't play: putting every putt out would
+// take half a minute on a headset, so each hole is scored from how the robot
+// usually does (strokes over par per hole, from the balance runs), with a
+// spread. A tie goes to sudden death on the course's last hole.
+export const GOLF_BIAS = { rookie: 1.25, bolt: 1.05, spinny: 0.9, chopper: 0.35, zippy: 0.1, vortex: -0.25, omega: -0.6 };
+export function quickHole(id, par, rng = Math.random) {
+  return Math.max(1, Math.min(MAX_STROKES + 1, Math.round(par + (GOLF_BIAS[id] ?? 0.5) + gauss(rng) * 0.8)));
+}
+// Returns { winner, score: [{ a, b }] } (score = the two totals; a playoff adds
+// a second entry with the sudden-death holes' strokes).
+export function simulateRound(a, b, holes, rng = Math.random) {
+  let ta = 0, tb = 0;
+  for (const h of holes) { ta += quickHole(a, h.par, rng); tb += quickHole(b, h.par, rng); }
+  const score = [{ a: ta, b: tb }];
+  if (ta !== tb) return { winner: ta < tb ? a : b, score };
+  const last = holes[holes.length - 1];
+  let pa = 0, pb = 0;
+  for (let k = 0; k < 20 && pa === pb; k++) { pa = quickHole(a, last.par, rng); pb = quickHole(b, last.par, rng); }
+  if (pa === pb) pa -= rng() < 0.5 ? 1 : -1;
+  score.push({ a: pa, b: pb });
+  return { winner: pa < pb ? a : b, score };
+}
+// Which course each round of the golf cup is played on.
+export const CUP_COURSES = ['classic', 'classic', 'trick'];
+
 // ---------------------------------------------------------------- talk --
 // Moments: start; the robot's own hole: ace, under (birdie or better), par,
 // over (bogey), bad (worse, or picked up), splash (water or a pit); yours:

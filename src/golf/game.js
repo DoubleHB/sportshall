@@ -9,6 +9,7 @@ import { BladeTracker } from '../desk.js';
 import { CanvasBoard, roundRect, FONT, C } from '../panel.js';
 
 const SHAFT = 0.86;                       // pointer to putter head, metres
+const ordinalWord = n => ['first', 'second', 'third', 'fourth', 'fifth'][n - 1] ?? `${n}th`;
 const SCORE_NAMES = { '-3': 'Albatross!', '-2': 'Eagle!', '-1': 'Birdie!', 0: 'Par', 1: 'Bogey', 2: 'Double bogey' };
 
 export function createGolf(ctx) {
@@ -311,19 +312,26 @@ export function createGolf(ctx) {
   // players: a number (pass the controls round) or a list of names. me: which
   // player is on this screen (null when everyone shares it). rival: a robot
   // character to play the round too (it putts last on each hole).
-  function start(players = 1, courseId = 'classic', me = null, rival = null) {
+  // cup: a cup match ({ label }): a tie goes to sudden death on the last hole.
+  function start(players = 1, courseId = 'classic', me = null, rival = null, cup = null) {
     useCourse(courseId);
     const names = Array.isArray(players) ? players
       : Array.from({ length: players }, (_, i) => (players === 1 ? 'You' : `Player ${i + 1}`));
     S.players = names.map(name => ({ name, scores: [] }));
     S.me = names.length === 1 ? 0 : me;
     S.remote = false;
+    S.cup = cup; S.playoff = 0;
     S.hole = 0; S.timers = [];
     endPreview();
     setUpRobot(rival);
     root.visible = true;
-    startHole();
-    if (S.bot) later(1.2, () => talk('start', true));
+    if (cup) {
+      // A cup match: say which, then the first hole.
+      S.ball = null; S.phase = 'between'; showHole(0);
+      showBanner(cup.label, `${S.players.map((p, i) => nameOf(i)).join(' v ')} · ${course.name}, ${holes.length} holes`, '#d4af37', 3);
+      later(3.2, startHole);
+    } else startHole();
+    if (S.bot) later(cup ? 3.6 : 1.2, () => talk('start', true));
   }
 
   // The menu's view of a course (golf picked, no round on): its first hole,
@@ -387,16 +395,19 @@ export function createGolf(ctx) {
       case 'pickup':
         showBanner('Picked up', `${MAX_STROKES} strokes is the limit: ${ev.score} on this hole`, '#ff5a5a', 2.6);
         break;
+      case 'playoff':
+        showBanner(ev.n === 1 ? 'All square: sudden death!' : 'Still level!', `${h.name} again: win the hole, win the match`, '#d4af37', 3);
+        break;
       case 'round': {
         const totals = ev.totals, par = coursePar(holes);
         if (solo) {
           showBanner(`Round over: ${totals[0]}`, `${totals[0] === par ? 'Level par' : totals[0] < par ? `${par - totals[0]} under par` : `${totals[0] - par} over par`}${ev.isBest ? ' · new best!' : ev.best ? ` · best ${ev.best}` : ''}`, ev.isBest ? '#d4af37' : '#2fb8ff', 5);
           if (ev.isBest || totals[0] <= par) { sfx.play('fanfare'); ctx.confetti?.({ x: 0, y: 0.5, z: 0 }); }
         } else {
-          const low = Math.min(...totals), winners = S.players.map((_, i) => i).filter(i => totals[i] === low);
+          const low = Math.min(...totals), winners = ev.winner != null ? [ev.winner] : S.players.map((_, i) => i).filter(i => totals[i] === low);
           const title = winners.length > 1 ? 'A tie!' : S.me === winners[0] ? 'You win!' : `${S.players[winners[0]].name} wins!`;
           const robotWon = winners.length === 1 && S.players[winners[0]].kind === 'robot';
-          showBanner(title, `${S.players.map((p, i) => `${nameOf(i)} ${totals[i]}`).join(' · ')}${ev.isBest ? ' · your new best!' : ''}`, robotWon ? '#ff9a5a' : '#d4af37', 5);
+          showBanner(title, `${S.players.map((p, i) => `${nameOf(i)} ${totals[i]}`).join(' · ')}${ev.playoff ? ` · won on the ${ordinalWord(ev.playoff)} playoff hole` : ''}${ev.isBest ? ' · your new best!' : ''}`, robotWon ? '#ff9a5a' : '#d4af37', 5);
           if (robotWon) sfx.play('groan');
           else { sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2); }
           if (S.me != null && S.me === winners[0] && S.bot) ctx.confetti?.({ x: 0, y: 0.5, z: 0 });
@@ -584,7 +595,8 @@ export function createGolf(ctx) {
       } else if (ev.score === 1 || diff < 0) { later(1.0, () => talk('pGood')); B.model.celebrate('droop'); }
       else if (ev.k === 'pickup' || diff >= 2) later(1.0, () => talk('pBad'));
     } else if (ev.k === 'round') {
-      const low = Math.min(...ev.totals), botWon = ev.totals[S.players.indexOf(B.p)] === low && ev.totals.filter(t => t === low).length === 1;
+      const low = Math.min(...ev.totals), bi = S.players.indexOf(B.p);
+      const botWon = ev.winner != null ? ev.winner === bi : ev.totals[bi] === low && ev.totals.filter(t => t === low).length === 1;
       later(1.2, () => talk(botWon ? 'win' : 'pWin', true));
       B.model.celebrate(botWon ? 'dance' : 'slump');
     }
@@ -630,20 +642,41 @@ export function createGolf(ctx) {
   function finishTurn(sunk) {
     const h = holeNow(), p = player();
     const score = sunk ? S.strokes : MAX_STROKES + 1;
-    p.scores[S.hole] = score;
+    // (A playoff hole's strokes are kept apart from the round's.)
+    if (S.playoff) (p.po ??= [])[S.playoff - 1] = score;
+    else p.scores[S.hole] = score;
     S.phase = 'between';
     announce({ k: sunk ? 'sunk' : 'pickup', p: S.turn, score });
     drawCard();
     later(3.0, () => {
       if (S.turn + 1 < S.players.length) { S.turn++; announce({ k: 'turn', p: S.turn }); later(1.2, startTurn); return; }
+      if (S.playoff) {
+        const last = S.players.map(q => q.po?.[S.playoff - 1] ?? 99);
+        if (last.filter(v => v === Math.min(...last)).length > 1) return startPlayoff();
+        return finishRound();
+      }
       if (S.hole + 1 < holes.length) { S.hole++; startHole(); return; }
+      // A cup match can't end level.
+      const totals = S.players.map(q => q.scores.reduce((a, b) => a + b, 0));
+      if (S.cup && totals.filter(v => v === Math.min(...totals)).length > 1) return startPlayoff();
       finishRound();
     });
+  }
+  // Sudden death: the last hole again, until one of you wins it.
+  function startPlayoff() {
+    S.playoff++;
+    S.hole = holes.length - 1;
+    announce({ k: 'playoff', n: S.playoff, p: 0 });
+    later(2.6, startHole);
   }
 
   function finishRound() {
     S.phase = 'done';
     const totals = S.players.map(p => p.scores.reduce((a, b) => a + b, 0));
+    // Who won: the lowest total, or the playoff's last hole (null: a tie).
+    const deciding = S.playoff ? S.players.map(p => p.po?.[S.playoff - 1] ?? 99) : totals;
+    const low = Math.min(...deciding), leaders = deciding.map((v, i) => i).filter(i => deciding[i] === low);
+    const winner = leaders.length === 1 ? leaders[0] : null;
     let isBest = false, best = null;
     // Your best: when you're the only person playing (a robot or not).
     const people = S.players.filter(p => p.kind !== 'robot');
@@ -655,7 +688,7 @@ export function createGolf(ctx) {
       if (isBest) { stats.golfBests[course.id] = totals[you]; save('sh_stats', stats); }
       // Against a robot: a win (or a tie) beats it.
       if (S.bot) {
-        const beat = totals[you] <= totals[S.players.indexOf(S.bot.p)];
+        const beat = winner == null ? totals[you] <= totals[S.players.indexOf(S.bot.p)] : winner === you;
         stats.golfRobots ??= { wins: 0, losses: 0, beaten: [] };
         const R = stats.golfRobots;
         if (beat) { R.wins++; if (!R.beaten.includes(S.bot.rival.id)) R.beaten.push(S.bot.rival.id); } else R.losses++;
@@ -663,8 +696,13 @@ export function createGolf(ctx) {
         ctx.lastResult?.(`${beat ? 'You beat' : 'You lost to'} ${S.bot.rival.name} at mini golf: ${totals[you]} to ${totals[S.players.indexOf(S.bot.p)]}`);
       }
     }
-    announce({ k: 'round', totals, isBest, best });
+    announce({ k: 'round', totals, isBest, best, winner, playoff: S.playoff });
     drawCard();
+    // A cup match: what the result means (shown after the usual banner).
+    if (S.cup && !S.remote) {
+      const note = ctx.onRoundResult?.({ totals, winner, po: S.playoff ? S.players.map(p => p.po.reduce((a, b) => a + b, 0)) : null });
+      if (note) later(2.8, () => showBanner(note.title, note.sub, note.colour, 3.4));
+    }
     later(5.5, () => ctx.roundOver?.());
   }
 
@@ -678,7 +716,7 @@ export function createGolf(ctx) {
     const hole = holeNow();
     g.textBaseline = 'middle';
     g.textAlign = 'left'; g.fillStyle = '#58d68d'; g.font = `800 40px ${FONT}`;
-    g.fillText(`${course.name.toUpperCase()} · HOLE ${S.hole + 1}`, 40, 56);
+    g.fillText(`${course.name.toUpperCase()} · ${S.playoff ? `PLAYOFF ${S.playoff > 1 ? S.playoff : ''}` : `HOLE ${S.hole + 1}`}`, 40, 56);
     g.textAlign = 'right'; g.fillStyle = C.dim; g.font = `600 32px ${FONT}`;
     g.fillText(`${hole.name} · par ${hole.par}`, w - 40, 56);
     // Grid: names + 6 holes + total.
@@ -772,7 +810,7 @@ export function createGolf(ctx) {
     useCourse(courseId);
     S.players = names.map(name => ({ name, scores: [] }));
     S.me = me; S.remote = true; S.timers = []; S.hole = -1; S.phase = 'idle';
-    S.bot = null; robotPutter.group.visible = false;
+    S.bot = null; robotPutter.group.visible = false; S.cup = null; S.playoff = 0;
     endPreview();
     root.visible = true;
   }
@@ -911,7 +949,7 @@ export function createGolf(ctx) {
     get active() { return root.visible && !S.preview; },
     get phase() { return S.phase; },
     get state() { return S; },
-    start(players, courseId, me, rival) { start(players, courseId, me, rival); },
+    start(players, courseId, me, rival, cup) { start(players, courseId, me, rival, cup); },
     // The menu's view of a course (null: put it away), and where to stand for it.
     preview(courseId) { if (courseId) preview(courseId); else endPreview(); },
     previewView,

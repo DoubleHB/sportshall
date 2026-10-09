@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HOLES, TRICK, COURSES, wallsOf, pointInPoly, coursePar, CUP_R } from '../src/golf/course.js';
 import { makeGolfBall, prepareHole, putt, rollOut, golfStep, windmillBlocked, putterContact, slopeAccel, ROLL_DECEL, speedOf, loopSpeed, sliderAt } from '../src/golf/physics.js';
-import { planPutt, playHole, golfSkill, wobble } from '../src/golf/ai.js';
+import { planPutt, playHole, golfSkill, wobble, simulateRound, CUP_COURSES } from '../src/golf/ai.js';
 import { rng32 } from './sim.mjs';
 
 test('every hole: tee and cup inside the walls, par 2-3', () => {
@@ -178,4 +178,21 @@ test('robot golfers: Omega plays the first three holes in fewer than Rookie', ()
   assert.ok(omega < rookie, `omega ${omega}, rookie ${rookie}`);
   assert.ok(omega <= par + 1, `omega ${omega}`);
   assert.ok(rookie >= par, `rookie ${rookie}`);
+});
+
+test('golf cup: robot rounds played out quickly favour the better robot, ties go to a playoff', () => {
+  const rng = rng32(21);
+  let omega = 0, playoffs = 0;
+  for (let k = 0; k < 200; k++) {
+    const q = simulateRound('omega', 'rookie', HOLES, rng);
+    if (q.winner === 'omega') omega++;
+    if (q.score[1]) { playoffs++; assert.equal(q.score[0].a, q.score[0].b); assert.notEqual(q.score[1].a, q.score[1].b); }
+    else assert.notEqual(q.score[0].a, q.score[0].b);
+  }
+  assert.ok(omega > 170, `omega won ${omega}/200`);
+  // Closer robots: closer rounds, some level after six holes.
+  let ties = 0;
+  for (let k = 0; k < 200; k++) if (simulateRound('chopper', 'zippy', HOLES, rng).score[1]) ties++;
+  assert.ok(ties > 10, `${ties} playoffs`);
+  assert.deepEqual(CUP_COURSES, ['classic', 'classic', 'trick']);
 });

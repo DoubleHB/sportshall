@@ -24,12 +24,12 @@ import { decodeFeel, feelLink } from './share.js';
 import { LESSONS, LESSON_BALLS, lessonById, judgeHit, judgeShot, judgeServe, starsFor } from './lessons.js';
 import { createGolf } from './golf/game.js';
 import { COURSES as GOLF_COURSES, coursePar } from './golf/course.js';
-import { GOLF_FORM } from './golf/ai.js';
+import { GOLF_FORM, simulateRound, CUP_COURSES } from './golf/ai.js';
 import { createDarts, DARTS_VIEW } from './darts/game.js';
 import { DART_AVG } from './darts/robots.js';
 import { simulateMatch, ROUND_LEGS, CUP_START } from './darts/cup.js';
 
-export const VERSION = '0.13.0';
+export const VERSION = '0.14.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -64,6 +64,9 @@ let cupSaved = null;
 try { cupSaved = JSON.parse(localStorage.getItem('sh_cup') || 'null'); } catch { /* none */ }
 let dcupSaved = null;     // and the darts cup
 try { dcupSaved = JSON.parse(localStorage.getItem('sh_dcup') || 'null'); } catch { /* none */ }
+let gcupSaved = null;     // and the mini golf cup
+try { gcupSaved = JSON.parse(localStorage.getItem('sh_gcup') || 'null'); } catch { /* none */ }
+stats.golfCups ??= 0;
 function load(key, def) { try { return { ...def, ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return { ...def }; } }
 function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 const ASSIST = { off: 0, light: 0.55, full: 1 };
@@ -147,6 +150,8 @@ const G = {
   cupRef: null,          // { r, i }: the cup match being played or watched
   dcup: dcupSaved,       // the darts cup bracket, or null
   dcupRef: null,         // { r, i, youA, watch }: the darts cup match on now
+  gcup: gcupSaved,       // the mini golf cup bracket, or null
+  gcupRef: null,         // { r, i, youA }: the golf cup round on now
   dartsFriend: false,    // playing darts with the friend you're hosting
   shareNote: '',
   view: null,            // where VR puts you (null = behind your end of the table)
@@ -271,8 +276,10 @@ golf = createGolf({
   remotePutt: (dx, dz, speed) => G.net?.link?.send({ t: 'gputt', dx, dz, speed }),
   roundOver: () => {
     if (G.golfFriend) { send({ t: 'gend' }); G.golfFriend = false; }
-    G.mode = 'menu'; openMenu(G.role === 'host' ? 'friend' : 'golf');
+    G.mode = 'menu'; openMenu(G.gcupRef ? 'gcup' : G.role === 'host' ? 'friend' : 'golf');
   },
+  // A cup round is over: record it (returns a banner saying what it means).
+  onRoundResult: res => golfCupResult(res),
 });
 // Darts, the third sport: the robot comes down to the oche to throw with you.
 const MATCH_GAMES = ['x01', 'cricket', 'killer'];      // the Match tab's games (the rest are practice)
@@ -307,7 +314,7 @@ const trophy = buildTrophy();
 // the table, the darts stage, and not behind a scoreboard from your end, the
 // oche or the courtside seats.
 trophy.root.position.set(3.3, 0, -1.6);
-trophy.root.visible = !!stats.ladder.champion || stats.cups > 0 || stats.darts.cups > 0;
+trophy.root.visible = !!stats.ladder.champion || stats.cups > 0 || stats.darts.cups > 0 || stats.golfCups > 0;
 scene.add(trophy.root);
 // The friend you host, at the far end, and the host as seen by a guest.
 const friendAvatar = buildHuman({ shirt: 0xff7a1a, hair: 0x6b3a1e });
@@ -497,11 +504,11 @@ function renderMenu(ui) {
   const gc = GOLF_COURSES[settings.golfCourse] ?? GOLF_COURSES.classic;
   const D = stats.darts;
   const honours = golfing
-    ? (stats.golfBests[gc.id] ? `${gc.name} best: ${stats.golfBests[gc.id]} (par ${coursePar(gc.holes)})` : '')
+    ? [stats.golfCups && `🏆 ${stats.golfCups} cup${stats.golfCups > 1 ? 's' : ''}`, stats.golfBests[gc.id] && `${gc.name} best: ${stats.golfBests[gc.id]} (par ${coursePar(gc.holes)})`].filter(Boolean).join('   ')
     : darting ? [D.cups && `🏆 ${D.cups} cup${D.cups > 1 ? 's' : ''}`, D.beaten.length && `🎯 ${D.beaten.length}/${RIVALS.length} robots beaten`, D.n180 && `${D.n180} × 180`].filter(Boolean).join('   ')
       : [stats.ladder.champion && '★ Ladder champion', stats.cups && `🏆 ${stats.cups} cup${stats.cups > 1 ? 's' : ''}`].filter(Boolean).join('   ');
   if (honours) ui.text(honours, w - 60, 140, { size: 30, weight: 800, color: '#d4af37', align: 'right' });
-  const tabs = golfing ? [['golf', 'Play'], ['friend', 'Friend'], ['settings', 'Settings']]
+  const tabs = golfing ? [['golf', 'Play'], ['gcup', 'Cup'], ['friend', 'Friend'], ['settings', 'Settings']]
     : darting ? [['darts', 'Match'], ['dcup', 'Cup'], ['dpractice', 'Practice'], ['friend', 'Friend'], ['dsettings', 'Settings']]
       : [['match', 'Match'], ['ladder', 'Ladder'], ['cup', 'Cup'], ['practice', 'Practice'], ['friend', 'Friend'], ['settings', 'Settings']];
   const tw = (w - 120 - (tabs.length - 1) * 14) / tabs.length;
@@ -656,8 +663,8 @@ function renderMenu(ui) {
       ui.button('recentre', L + width - 640, 900, 300, 70, 'Recentre', { size: 32 });
       ui.button('exit', L + width - 320, 900, 320, 70, G.mr ? 'Exit mixed reality' : 'Exit VR', { size: 32 });
     }
-  } else if (G.tab === 'cup' || G.tab === 'dcup') {
-    renderCup(ui, L, R, width, dim, G.tab === 'dcup');
+  } else if (G.tab === 'cup' || G.tab === 'dcup' || G.tab === 'gcup') {
+    renderCup(ui, L, R, width, dim, { cup: 'tt', dcup: 'darts', gcup: 'golf' }[G.tab]);
   } else if (G.tab === 'share') {
     renderShare(ui, L, R, width, dim);
   } else if (G.tab === 'practice') {
@@ -774,16 +781,19 @@ function renderMenu(ui) {
 const entrantName = id => (id === YOU ? 'You' : rivalById(id).name);
 const entrantColour = id => (id === YOU ? '#7fd1ff' : hex(rivalById(id).look.accent));
 
-// The table tennis cup, or (dartsCup) the darts cup: same draw, same buttons
-// with a 'dcup:' prefix.
-function renderCup(ui, L, R, width, dim, dartsCup = false) {
-  const cup = dartsCup ? G.dcup : G.cup, g = ui.g, k = dartsCup ? 'dcup' : 'cup';
-  const won = dartsCup ? stats.darts.cups : stats.cups;
+// The table tennis cup, the darts cup or the mini golf cup (kind 'tt' |
+// 'darts' | 'golf'): the same draw, the same buttons with 'cup:', 'dcup:' or 'gcup:'.
+function renderCup(ui, L, R, width, dim, kind = 'tt') {
+  const dartsCup = kind === 'darts', golfCup = kind === 'golf';
+  const cup = { tt: G.cup, darts: G.dcup, golf: G.gcup }[kind], g = ui.g, k = { tt: 'cup', darts: 'dcup', golf: 'gcup' }[kind];
+  const won = { tt: stats.cups, darts: stats.darts.cups, golf: stats.golfCups }[kind];
   if (!cup) {
     dim('Eight players, one cup: you and seven robots in a knockout.', 300);
-    dim(dartsCup ? `Quarter-finals and semi-finals are one leg of ${CUP_START}; the final is best of three legs.` : 'Quarter-finals and semi-finals are one game to 11; the final is best of three.', 345);
-    dim(dartsCup ? `You only play your own matches; watch the robot matches or skip them. Finish: ${settings.dartsFinish === 'double' ? 'double out' : 'any finish'} (Match tab).`
-      : 'You only play your own matches; watch the robot matches or skip them.', 390);
+    dim(golfCup ? 'Quarter-finals and semi-finals are a round of Classic; the final is a round of Trickshot.'
+      : dartsCup ? `Quarter-finals and semi-finals are one leg of ${CUP_START}; the final is best of three legs.` : 'Quarter-finals and semi-finals are one game to 11; the final is best of three.', 345);
+    dim(golfCup ? 'Fewest strokes goes through; a tie goes to sudden death on the last hole. The robots\' matches are played out for you.'
+      : dartsCup ? `You only play your own matches; watch the robot matches or skip them. Finish: ${settings.dartsFinish === 'double' ? 'double out' : 'any finish'} (Match tab).`
+        : 'You only play your own matches; watch the robot matches or skip them.', 390);
     ui.text(won ? `Cups won: ${won}` : 'No cups yet.', L, 470, { size: 40, weight: 800, color: won ? '#d4af37' : C.text });
     ui.button(`${k}:new`, L, 560, width, 120, 'Start a cup', { primary: true, size: 50 });
     return;
@@ -798,7 +808,8 @@ function renderCup(ui, L, R, width, dim, dartsCup = false) {
   // The bracket: quarter-finals, semi-finals, final.
   const cols = [L, L + 480, L + 960], bw = 420, bh = 100;
   const ys = [[345, 480, 615, 750], [412, 682], [547]];
-  ['Quarter-finals', 'Semi-finals', dartsCup ? 'Final (best of 3 legs)' : 'Final (best of 3)'].forEach((t, r) => ui.text(t, cols[r], 334, { size: 24, weight: 700, color: C.dim }));
+  (golfCup ? ['Quarter-finals (Classic)', 'Semi-finals (Classic)', 'Final (Trickshot)'] : ['Quarter-finals', 'Semi-finals', dartsCup ? 'Final (best of 3 legs)' : 'Final (best of 3)'])
+    .forEach((t, r) => ui.text(t, cols[r], 334, { size: 24, weight: 700, color: C.dim }));
   g.strokeStyle = '#3a4866'; g.lineWidth = 3;
   for (let r = 0; r < 2; r++) ys[r].forEach((y, i) => {
     const ny = ys[r + 1][i >> 1] + bh / 2;
@@ -818,7 +829,9 @@ function renderCup(ui, L, R, width, dim, dartsCup = false) {
       ui.text(entrantName(id), x + 52, ty + 10, { size: 30, weight: m.winner === id ? 800 : 600, color: lost ? '#6b7896' : '#fff' });
       if (m.score) {
         const mine = s => (k === 'a' ? s.a : s.b), theirs = s => (k === 'a' ? s.b : s.a);
-        const shown = m.score.length === 1 ? mine(m.score[0]) : m.score.filter(s => mine(s) > theirs(s)).length;
+        // (Golf: strokes for the round; a playoff shows after it.)
+        const shown = golfCup ? `${mine(m.score[0])}${m.score[1] ? ` (${mine(m.score[1])})` : ''}`
+          : m.score.length === 1 ? mine(m.score[0]) : m.score.filter(s => mine(s) > theirs(s)).length;
         ui.text(String(shown), x + bw - 24, ty + 10, { size: 32, weight: 800, align: 'right', color: lost ? '#6b7896' : '#ffd23f' });
       }
     });
@@ -826,13 +839,19 @@ function renderCup(ui, L, R, width, dim, dartsCup = false) {
 
   // What next.
   const y = 890;
-  const inCupMatch = dartsCup ? G.mode === 'darts' && G.dcupRef && darts.inProgress()
-    : (G.mode === 'match' || G.mode === 'exhibition') && G.cupRef && G.match && !G.match.over;
-  if (inCupMatch) ui.button('resume', L, y, width - 320, 96, 'Resume the match', { primary: true, size: 40 });
+  const inCupMatch = golfCup ? G.mode === 'golf' && G.gcupRef && golf.inProgress()
+    : dartsCup ? G.mode === 'darts' && G.dcupRef && darts.inProgress()
+      : (G.mode === 'match' || G.mode === 'exhibition') && G.cupRef && G.match && !G.match.over;
+  if (inCupMatch) ui.button('resume', L, y, width - 320, 96, golfCup ? 'Resume the round' : 'Resume the match', { primary: true, size: 40 });
   else if (!nx) ui.button(`${k}:new`, L, y, width - 320, 96, 'Start a new cup', { primary: true, size: 40 });
   else if (involvesYou(nx.m)) {
     const opp = nx.m.a === YOU ? nx.m.b : nx.m.a;
     ui.button(`${k}:play`, L, y, width - 320, 96, `Play ${entrantName(opp)} · ${ROUND_NAMES[nx.r]}`, { primary: true, size: 38 });
+  } else if (golfCup) {
+    // (Robot rounds are played out for you: there's no watching two robots putt.)
+    const bw2 = (width - 320 - 20) / 2;
+    ui.button(`${k}:skip`, L, y, bw2, 96, 'Play it out', { primary: true, size: 34 });
+    ui.button(`${k}:skipall`, L + bw2 + 20, y, bw2, 96, out ? 'Play out the rest' : 'On to my match', { size: 32 });
   } else {
     const bw2 = (width - 320 - 40) / 3;
     ui.button(`${k}:watch`, L, y, bw2, 96, 'Watch it', { primary: true, size: 34 });
@@ -886,6 +905,48 @@ function dartsCupResult({ winner, legsWon }) {
     return { title: 'CUP WINNERS!', sub: 'You won the darts cup', colour: '#d4af37' };
   }
   if (ref.watch) return { title: `${entrantName(winId)} goes through`, sub: ref.r < 2 ? `to the ${ROUND_NAMES[ref.r + 1].toLowerCase()}` : 'and wins the cup', colour: entrantColour(winId) };
+  return winId === YOU ? { title: 'Through!', sub: `You're in the ${ROUND_NAMES[ref.r + 1].toLowerCase()}`, colour: C.good }
+    : { title: 'Out of the cup', sub: `Knocked out in the ${ROUND_NAMES[ref.r].toLowerCase()}`, colour: C.bad };
+}
+
+// ------------------------------------------------------- mini golf cup --
+function saveGCup() { save('sh_gcup', G.gcup); }
+// Record a golf cup result; true if you've just won the cup.
+function gcupRecord(r, i, winner, score) {
+  cupRecordResult(G.gcup, r, i, winner, score);
+  saveGCup();
+  if (G.gcup.champion !== YOU) return false;
+  stats.golfCups = (stats.golfCups ?? 0) + 1; save('sh_stats', stats);
+  trophy.root.visible = true;
+  return true;
+}
+function gcupSkip(all) {
+  let nx;
+  while ((nx = nextMatch(G.gcup)) && !involvesYou(nx.m)) {
+    const q = simulateRound(nx.m.a, nx.m.b, GOLF_COURSES[CUP_COURSES[nx.r]].holes);
+    gcupRecord(nx.r, nx.i, q.winner, q.score);
+    if (!all) { showBanner(`${entrantName(q.winner)} goes through`, `${entrantName(nx.m.a)} ${q.score[0].a} · ${entrantName(nx.m.b)} ${q.score[0].b}${q.score[1] ? ' · after a playoff' : ''}`, entrantColour(q.winner), 3); break; }
+  }
+  if (G.gcup.champion && G.gcup.champion !== YOU) showBanner(`${entrantName(G.gcup.champion)} wins the cup`, '', hex(rivalById(G.gcup.champion).look.accent), 3);
+}
+function gcupPlayNext() {
+  const nx = nextMatch(G.gcup);
+  if (!nx || !involvesYou(nx.m)) return;
+  const opp = rivalById(nx.m.a === YOU ? nx.m.b : nx.m.a);
+  startGolf(1, null, { rival: opp, course: CUP_COURSES[nx.r], cup: { label: `Cup ${ROUND_NAMES[nx.r].toLowerCase()}` }, ref: { r: nx.r, i: nx.i, youA: nx.m.a === YOU } });
+}
+// The golf game's cup round is over: record it and say what it means. totals
+// and po (playoff strokes) are [you, the robot].
+function golfCupResult({ totals, winner, po }) {
+  const ref = G.gcupRef;
+  if (!ref) return null;
+  const cm = G.gcup.rounds[ref.r][ref.i];
+  const opp = ref.youA ? cm.b : cm.a;
+  const winId = winner === 0 ? YOU : opp;
+  const side = ([y, o]) => (ref.youA ? { a: y, b: o } : { a: o, b: y });
+  const score = [side(totals), ...(po ? [side(po)] : [])];
+  const champs = gcupRecord(ref.r, ref.i, winId, score);
+  if (champs) return { title: 'CUP WINNERS!', sub: 'You won the mini golf cup', colour: '#d4af37' };
   return winId === YOU ? { title: 'Through!', sub: `You're in the ${ROUND_NAMES[ref.r + 1].toLowerCase()}`, colour: C.good }
     : { title: 'Out of the cup', sub: `Knocked out in the ${ROUND_NAMES[ref.r].toLowerCase()}`, colour: C.bad };
 }
@@ -981,6 +1042,12 @@ function onMenuClick(id) {
   }
   else if (k === 'darts') startDarts(v);
   else if (id === 'dartsversus') startDartsVersus();
+  else if (k === 'gcup') {
+    if (v === 'new') { G.gcup = newCup(); saveGCup(); }
+    else if (v === 'play') gcupPlayNext();
+    else if (v === 'skip') gcupSkip(false);
+    else if (v === 'skipall') gcupSkip(true);
+  }
   else if (k === 'dcup') {
     if (v === 'new') { G.dcup = newCup(); saveDCup(); }
     else if (v === 'play') dcupPlayNext(false);
@@ -1043,9 +1110,9 @@ function onMenuClick(id) {
 const _mf = new V3();
 function openMenu(tab) {
   if (tab) G.tab = tab;
-  else if (G.sport === 'golf' && !['golf', 'friend', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
+  else if (G.sport === 'golf' && !['golf', 'gcup', 'friend', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
   else if (G.sport === 'darts' && !['darts', 'dcup', 'dpractice', 'friend', 'dsettings'].includes(G.tab)) G.tab = 'darts';
-  else if (G.sport === 'tt' && ['golf', 'darts', 'dcup', 'dpractice', 'dsettings'].includes(G.tab)) G.tab = 'match';
+  else if (G.sport === 'tt' && ['golf', 'gcup', 'darts', 'dcup', 'dpractice', 'dsettings'].includes(G.tab)) G.tab = 'match';
   G.paused = true;
   menu.mesh.visible = true;
   menuScene();
@@ -1104,7 +1171,7 @@ function clearPlay() {
   }
   // Back from darts: the robot picks its paddle up again.
   if (G.dartsFriend) { send({ t: 'dend' }); G.dartsFriend = false; }
-  G.dcupRef = null;
+  G.dcupRef = null; G.gcupRef = null;
   if (darts?.active) {
     darts.stop(); attachHands();
     for (const r of [W.robot, robot2, robot3]) { r.showPaddle(true); r.root.position.set(0, 0, 0); }
@@ -1176,15 +1243,17 @@ function friendKillerRobots() {
 const friendRobotsText = () => { const r = friendKillerRobots().map(b => b.name); return r.length ? `, with ${r.join(' and ')}` : ''; };
 
 // players: a number (sharing this screen) or a list of names; me: our index.
-function startGolf(players = settings.golfPlayers, me = null) {
+// cup: a golf cup round { rival, course, cup: { label }, ref }.
+function startGolf(players = settings.golfPlayers, me = null, cup = null) {
   clearPlay();
   G.mode = 'golf';
+  G.gcupRef = cup?.ref ?? null;
   W.table.visible = false; W.robot.root.visible = false; scoreboard.mesh.visible = false;
   desk.outer.visible = false;
   closeMenu();
   // A robot plays the round too, unless it's a round with a friend.
-  const rival = Array.isArray(players) ? null : RIVALS.find(r => r.id === settings.golfRobot) ?? null;
-  golf.start(players, settings.golfCourse, me, rival);
+  const rival = cup ? cup.rival : Array.isArray(players) ? null : RIVALS.find(r => r.id === settings.golfRobot) ?? null;
+  golf.start(players, cup?.course ?? settings.golfCourse, me, rival, cup?.cup ?? null);
   attachHands();
   serveButton(false);
   if (!G.inXR) golf.snapCamera();
