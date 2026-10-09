@@ -386,13 +386,19 @@ function buildHall() {
     const l = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.05, 0.4), lamp);
     l.position.set(x, 8.9, z); g.add(l);
   }
-  // Big hanging banners on the far wall.
-  const banner = canvasTexture(1024, 256, (c, w, h) => {
+  // Big hanging banners on the far wall, naming the sport being played.
+  const drawSign = (c, w, h, text) => {
     c.fillStyle = '#0d1424'; c.fillRect(0, 0, w, h);
     c.fillStyle = '#ff7a1a'; c.fillRect(0, h - 18, w, 18);
     c.fillStyle = '#fff'; c.font = '900 120px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.fillText('TABLE TENNIS', w / 2, h / 2 - 8);
-  });
+    c.fillText(text, w / 2, h / 2 - 8);
+  };
+  const banner = canvasTexture(1024, 256, (c, w, h) => drawSign(c, w, h, 'TABLE TENNIS'));
+  g.userData.setSign = text => {
+    const c = banner.image;
+    drawSign(c.getContext('2d'), c.width, c.height, text);
+    banner.needsUpdate = true;
+  };
   const ban = new THREE.Mesh(new THREE.PlaneGeometry(8, 2), new THREE.MeshBasicMaterial({ map: banner }));
   ban.position.set(0, 5.6, -11.9);
   g.add(ban);
@@ -475,6 +481,8 @@ export function buildWorld(scene, renderer) {
       },
       // Mixed reality: hide the hall so you see your own room round the table.
       setMixedReality(on) { hall.visible = !on; },
+      // The far wall's sign: TABLE TENNIS, MINI GOLF or DARTS.
+      setSign(text) { hall.userData.setSign(text); },
     };
   });
 }

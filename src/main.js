@@ -28,7 +28,7 @@ import { createDarts, DARTS_VIEW } from './darts/game.js';
 import { DART_AVG } from './darts/robots.js';
 import { simulateMatch, ROUND_LEGS, CUP_START } from './darts/cup.js';
 
-export const VERSION = '0.11.1';
+export const VERSION = '0.12.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -960,7 +960,7 @@ function onMenuClick(id) {
   if (k === 'tab') { G.tab = v; G.shareNote = ''; }
   else if (k === 'sport') {
     if (v !== G.sport) {
-      if (G.mode !== 'menu' || darts.active) { clearPlay(); G.mode = 'menu'; }
+      if (G.mode !== 'menu' || darts.active || golf.active) { clearPlay(); G.mode = 'menu'; }
       G.sport = settings.sport = v;
       G.tab = v === 'golf' ? 'golf' : v === 'darts' ? 'darts' : 'match';
     }
@@ -1020,6 +1020,7 @@ function onMenuClick(id) {
   else if (id === 'recentre') { needRecentre = true; }
   else if (id === 'exit') renderer.xr.getSession()?.end();
   save('sh_settings', settings);
+  menuScene();
   menu.redraw();
   drawScoreboard();
 }
@@ -1031,6 +1032,7 @@ function openMenu(tab) {
   else if (G.sport === 'tt' && ['golf', 'darts', 'dcup', 'dpractice', 'dsettings'].includes(G.tab)) G.tab = 'match';
   G.paused = true;
   menu.mesh.visible = true;
+  menuScene();
   menu.redraw();
 }
 function closeMenu() {
@@ -1041,8 +1043,24 @@ function closeMenu() {
 }
 function toggleMenu() { if (G.paused) closeMenu(); else openMenu(); }
 
+// In the menu, the hall shows the sport you've picked: the table, the darts
+// stage or the course's first hole, and in VR you stand where you'd play it.
+const golfViews = {};      // one per course, so opening the menu again doesn't recentre you
+function menuScene() {
+  if (G.mode !== 'menu' || G.role === 'guest') return;
+  const s = G.sport;
+  // After a round, picking the other course shows that one.
+  if (golf.active && !golf.inProgress() && golf.courseId !== settings.golfCourse) { golf.stop(); attachHands(); }
+  if ((s === 'golf' && golf.active) || (s === 'darts' && darts.active)) return;   // a finished game is still on show
+  darts.preview(s === 'darts', G.mr);
+  golf.preview(s === 'golf' ? settings.golfCourse : null);
+  W.table.visible = scoreboard.mesh.visible = W.robot.root.visible = desk.outer.visible = s === 'tt';
+  if (G.inXR) setView(s === 'darts' ? DARTS_VIEW : s === 'golf' ? (golfViews[settings.golfCourse] ??= golf.previewView()) : null);
+}
+
 // ------------------------------------------------------------ game flow --
 function clearPlay() {
+  darts.preview(false); golf.preview(null);     // the menu's view of them
   G.timers = []; G.ball = null; G.ballState = 'none'; G.ref = null; G.ladder = false; G.cupRef = null;
   G.streak = { who: null, n: 0 };
   W.setBall(null);
@@ -1158,7 +1176,8 @@ function setView(v) {
 function placeMenu() {
   const s = G.view ?? { x: 0, z: TB.halfL + 0.6, th: 0, lift: 0 };
   const fx = -Math.sin(s.th), fz = -Math.cos(s.th);
-  menu.mesh.position.set(s.x + fx * 1.12, 1.32 + (s.lift || 0), s.z + fz * 1.12);
+  const low = s === DARTS_VIEW ? 0.2 : 0;     // at the oche: under the board, so you can see it
+  menu.mesh.position.set(s.x + fx * 1.12, 1.32 + (s.lift || 0) - low, s.z + fz * 1.12);
   menu.mesh.rotation.set(-0.12, s.th, 0, 'YXZ');
 }
 
@@ -2186,6 +2205,7 @@ async function enterXR(mode) {
     scene.background = BG;
     renderer.xr.setReferenceSpace(null);
     baseSpace = null;
+    if (G.mode === 'menu') setView(null);     // the menu's standing spot is for VR only
     attachHands();
     resetDeskCamera();
     if (G.mode !== 'menu') openMenu();
@@ -2263,6 +2283,7 @@ function deskUpdate(dt) {
 let lastT = 0;
 renderer.setAnimationLoop(onFrame);
 const _hp = new V3(), _cp = new V3(), _cq = new THREE.Quaternion();
+let hallSign = 'TABLE TENNIS';     // what the far wall's sign says
 function onFrame(t, frame, render = true) {
   const dt = Math.min(0.05, Math.max(0, (t - lastT) / 1000) || 1 / 60);
   lastT = t;
@@ -2307,6 +2328,8 @@ function onFrame(t, frame, render = true) {
   }
 
   // Shared visuals.
+  const sign = golf.active || golf.state.preview ? 'MINI GOLF' : darts.active || darts.state.preview ? 'DARTS' : 'TABLE TENNIS';
+  if (sign !== hallSign) { hallSign = sign; W.setSign(sign); }
   W.crowd.update(dt);
   confetti.update(dt);
   trophy.update(dt);
@@ -2338,6 +2361,7 @@ function onFrame(t, frame, render = true) {
   };
   const sp = speaker();
   if (sp.root.visible) sayAt(bubble, sp);
+  else bubble.hide();      // (its robot's away: golf, or the darts menu)
   if (robot2.root.visible && !darts.active) sayAt(bubble2, robot2);
 
   if (!render) return;
@@ -2425,6 +2449,7 @@ async function setupButtons() {
 }
 setupButtons();
 drawScoreboard();
+menuScene();
 menu.redraw();
 menu.mesh.visible = false;
 

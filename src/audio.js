@@ -28,7 +28,7 @@ export class Sfx {
   // Follow the head. m = camera matrixWorld elements (column-major).
   setListener(m) {
     const l = this.ctx?.listener;
-    if (!l) return;
+    if (!l || !m.every(Number.isFinite)) return;     // (a view with no size yet gives NaNs, which throw)
     const t = this.ctx.currentTime;
     if (l.positionX) {
       l.positionX.setValueAtTime(m[12], t); l.positionY.setValueAtTime(m[13], t); l.positionZ.setValueAtTime(m[14], t);

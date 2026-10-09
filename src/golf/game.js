@@ -317,8 +317,30 @@ export function createGolf(ctx) {
     S.me = names.length === 1 ? 0 : me;
     S.remote = false;
     S.hole = 0; S.timers = [];
+    endPreview();
     root.visible = true;
     startHole();
+  }
+
+  // The menu's view of a course (golf picked, no round on): its first hole,
+  // without a ball or scorecard.
+  function preview(courseId) {
+    if (root.visible && !S.preview) return;      // a round is on
+    S.preview = true; S.phase = 'idle'; S.timers = []; S.drag = null;
+    useCourse(courseId); S.hole = 0; showHole(0);
+    ballMesh.visible = ballShadow.visible = card.mesh.visible = aimArrow.visible = aimDots.visible = false;
+    root.visible = true;
+  }
+  function endPreview() {
+    if (!S.preview) return;
+    S.preview = false;
+    root.visible = false;
+    card.mesh.visible = true;
+  }
+  // Where to stand for the preview: a metre behind the tee, facing the cup.
+  function previewView() {
+    const h = holes[0], dx = h.cup[0] - h.tee[0], dz = h.cup[1] - h.tee[1], l = Math.hypot(dx, dz) || 1;
+    return { x: h.tee[0] - dx / l, z: h.tee[1] - dz / l, th: Math.atan2(-dx, -dz), lift: 0 };
   }
 
   // Is it the turn of the player on this screen?
@@ -564,6 +586,7 @@ export function createGolf(ctx) {
     useCourse(courseId);
     S.players = names.map(name => ({ name, scores: [] }));
     S.me = me; S.remote = true; S.timers = []; S.hole = -1; S.phase = 'idle';
+    endPreview();
     root.visible = true;
   }
   // Friend: take the host's latest snapshot.
@@ -609,6 +632,7 @@ export function createGolf(ctx) {
     hb?.sliders.forEach(s => { s.mesh.position.x = GP.sliderAt(s.def, S.t).x; });
     hb?.spinners.forEach(s => { s.mesh.rotation.y = -GP.spinnerAngle(s.def, S.t); });
     if (hb?.water) hb.water.forEach(m => { m.material.map.offset.x = S.t * 0.02; m.material.map.offset.y = Math.sin(S.t * 0.7) * 0.02; });
+    if (S.preview) { S.t += dt; return; }
     if (paused) { tracker.invalidate(); return; }
     S.t += dt;
     // A friend's screen only draws what the host sends.
@@ -694,19 +718,22 @@ export function createGolf(ctx) {
 
   return {
     putterRig: putter.group,
-    get active() { return root.visible; },
+    get active() { return root.visible && !S.preview; },
     get phase() { return S.phase; },
     get state() { return S; },
     start(players, courseId, me) { start(players, courseId, me); },
+    // The menu's view of a course (null: put it away), and where to stand for it.
+    preview(courseId) { if (courseId) preview(courseId); else endPreview(); },
+    previewView,
     get courseId() { return course.id; },
     get players() { return S.players.map(p => p.name); },
     snapshot, remotePutt, startRemote, applyRemote,
     remoteAnnounce(ev) { announce(ev); },
     makePutter,
-    stop() { root.visible = false; S.phase = 'idle'; S.timers = []; S.drag = null; aimArrow.visible = aimDots.visible = false; },
+    stop() { endPreview(); root.visible = false; S.phase = 'idle'; S.timers = []; S.drag = null; aimArrow.visible = aimDots.visible = false; },
     update, goToBall, pointerDown, pointerMove, pointerUp, drawCard,
     snapCamera() { screenCamera(0, true); },
-    inProgress: () => root.visible && S.phase !== 'done' && S.phase !== 'idle',
+    inProgress: () => root.visible && !S.preview && S.phase !== 'done' && S.phase !== 'idle',
     // For tests: jump to a hole.
     testJump(i) { S.hole = i; S.timers = []; startHole(); },
     // For tests: putt the ball from the screen in a given direction and speed.

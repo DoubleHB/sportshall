@@ -302,6 +302,7 @@ export function createDarts(ctx) {
   // host (we run it), first, numbers (Killer) } }
   function start(opts) {
     stopAll();
+    S.preview = false;
     S.opts = opts;
     S.mode = opts.mode;
     S.t = 0; S.log = S.log ?? []; S.dartNo = 0; S.pending = null;
@@ -1141,7 +1142,7 @@ export function createDarts(ctx) {
 
   // ----------------------------------------------------------------- frame --
   function update(dt, { xr, paused, holding, mr }) {
-    if (!root.visible) return;
+    if (!root.visible || S.preview) return;
     wall.visible = !mr;
     if (!xr) screenCamera(dt, paused);
     placeBoards(xr);
@@ -1198,15 +1199,24 @@ export function createDarts(ctx) {
 
   return {
     handRig,
-    get active() { return root.visible; },
+    get active() { return root.visible && !S.preview; },
     get phase() { return S.phase; },
     get state() { return S; },
     get log() { return S.log; },
     start,
-    stop() { stopAll(); root.visible = false; S.phase = 'idle'; S.mode = null; },
+    stop() { stopAll(); S.preview = false; root.visible = false; S.phase = 'idle'; S.mode = null; },
+    // The menu's view (darts picked, no game on): the stage, empty. mr: no wall.
+    preview(on, mr = false) {
+      if (!on) { if (S.preview) { S.preview = false; root.visible = false; } return; }
+      if (root.visible && !S.preview) return;    // a game is on
+      stopAll();
+      S.preview = true; S.phase = 'idle'; S.mode = null;
+      card.mesh.visible = false; pop.mesh.visible = false; wall.visible = !mr;
+      root.visible = true;
+    },
     update, pointerDown, pointerMove, pointerUp,
     snapCamera() { S.cam = null; screenCamera(-1, false); },
-    inProgress: () => root.visible && S.phase !== 'done' && S.phase !== 'idle',
+    inProgress: () => root.visible && !S.preview && S.phase !== 'done' && S.phase !== 'idle',
     redraw: drawCard,
     // Playing a friend: their dart arriving (host), a dart from the host (friend's screen).
     remoteThrow, remoteDart,

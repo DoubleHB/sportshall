@@ -67,6 +67,13 @@ Killer and where to aim at each, Around the Clock, Count-up), `flight.js` (proje
 the wire, release speed), `robots.js` (spreads, lines, the caller) and `game.js`
 (stage, turns, robot, cameras); tested in `tests/darts.test.mjs`.
 
+**The menu shows the sport you pick**: with Darts or Mini Golf picked, the hall
+behind the menu shows the darts stage or the course's first hole (no table), the
+far wall's sign says DARTS or MINI GOLF, and in VR you're moved to the oche or
+behind the first tee, so pressing Play doesn't move you again (`menuScene()` in
+main.js, `darts.preview` / `golf.preview`). At the oche the menu sits a little
+lower so the board shows above it.
+
 Robots celebrate (fist pumps, spins, dances, sulks), talk in speech bubbles with
 beeps or a real voice (Settings > Robot talk), and confetti flies when you win.
 
