@@ -309,7 +309,11 @@ export function createDarts(ctx) {
     const R = opts.remote;
     const person = (name, i) => ({ name, kind: 'you', flight: FLIGHTS[i] });
     const robot = r => ({ name: r.name, kind: 'robot', rival: r, flight: r.look.accent });
-    if (R) S.players = R.names.map((name, i) => (i === R.me ? person('You', i) : { name, kind: 'remote', flight: FLIGHTS[i] }));
+    if (R) {
+      S.players = R.names.map((name, i) => (i === R.me ? person('You', i) : { name, kind: 'remote', flight: FLIGHTS[i] }));
+      // Killer with a friend can have robots in it too (the host throws their darts).
+      if (S.mode === 'killer' && opts.rivals?.length) S.players.push(...opts.rivals.map(robot));
+    }
     else if (opts.robotsOnly) S.players = opts.robotsOnly.map(robot);
     else if (S.mode === 'killer') {
       S.players = opts.rivals?.length ? [person('You', 0), ...opts.rivals.map(robot)]
@@ -329,10 +333,13 @@ export function createDarts(ctx) {
     root.visible = true;
     // A robot model for each robot, waiting its turn.
     ctx.robots.forEach(m => { m.root.visible = false; });
+    // (A friend waits in the first spot, so the robots start one further round.)
+    const spot0 = S.players.some(p => p.kind === 'remote') ? 1 : 0;
     robots().forEach((rp, i) => {
+      const wait = WAIT_SPOTS[Math.min(WAIT_SPOTS.length - 1, i + spot0)];
       Object.assign(rp, {
-        model: ctx.robots[i], wait: WAIT_SPOTS[i], pos: { ...WAIT_SPOTS[i] },
-        hand: new THREE.Vector3(WAIT_SPOTS[i].x + 0.2, 1.02, WAIT_SPOTS[i].z - 0.14),
+        model: ctx.robots[i], wait, pos: { ...wait },
+        hand: new THREE.Vector3(wait.x + 0.2, 1.02, wait.z - 0.14),
         // A stand-in for the table tennis Bot, so the model can be posed: pad =
         // where its hand goes (plus 0.13 up), relative to the robot's root.
         bot: { side: 1, pad: { x: 0.8, y: 1.2, z: 0 }, swing: 0, mood: 0 },
@@ -409,7 +416,8 @@ export function createDarts(ctx) {
   // between visits until we're waiting for that dart too.
   function catchUp() {
     for (const d of S.darts) if (d.state === 'fly') land(d);
-    for (let guard = 0; !['aim', 'remote', 'waiting'].includes(S.phase) && S.timers.length && guard < 50; guard++) {
+    // (A robot's visit counts as waiting too: on a friend's screen its darts come from the host.)
+    for (let guard = 0; !['aim', 'remote', 'waiting', 'robot'].includes(S.phase) && S.timers.length && guard < 50; guard++) {
       S.timers.sort((a, b) => a.t - b.t);
       const tm = S.timers.shift();
       S.t = Math.max(S.t, tm.t);
@@ -439,8 +447,17 @@ export function createDarts(ctx) {
     }
     S.pending = null;
     launch(p0, v0, out);
+    // A robot's dart: its arm here goes straight to the follow-through, however far
+    // through the throw it had got.
+    if (player()?.kind === 'robot' && S.rob) {
+      const R = S.rob;
+      if (R.step === 'walk' || !R.label) robotAim(R);
+      R.dart++; R.step = 'follow'; R.t = 0; R.next = Infinity;
+    }
     return true;
   }
+  // On a friend's screen the robots' darts are the host's to decide.
+  const hostThrows = () => !!S.opts.remote && !S.opts.remote.host;
 
   function land(d) {
     const o = d.out, at = o.at, v = velAt(d.v0, o.t), speed = Math.hypot(v.x, v.y, v.z);
@@ -634,7 +651,7 @@ export function createDarts(ctx) {
       sfx.play('fanfare');
       if (v.kind === 'robot') { talk('kKiller', false, v); v.model.celebrate('pump'); }
     } else if (top.kind === 'self') {
-      showBanner(isYou(v) ? 'Your own number!' : `${v.name} hits its own number!`, left, C.bad, 2);
+      showBanner(isYou(v) ? 'Your own number!' : `${v.name} hits ${v.kind === 'robot' ? 'its' : 'their'} own number!`, left, C.bad, 2);
       sfx.play('groan', null, 0.5);
       if (v.kind === 'robot') { talk('kSelf', true, v); v.model.celebrate('droop'); }
     } else if (top.kind === 'hit') {
@@ -642,18 +659,20 @@ export function createDarts(ctx) {
       sfx.play('cheer', null, isYou(by) ? 0.6 : 0.3); ctx.cheer(0.6);
       if (v.kind === 'robot') v.model.celebrate('droop');
       if (by.kind === 'robot') by.model.celebrate('pump');
-      if (isYou(v) && by.kind === 'robot') talk('kHit', false, by);
-      else if (isYou(by) && v.kind === 'robot') talk('kHurt', false, v);
+      if (v.kind !== 'robot' && by.kind === 'robot') talk('kHit', false, by);
+      else if (by.kind !== 'robot' && v.kind === 'robot') talk('kHurt', false, v);
     } else {
       const own = top.by === top.p;
       showBanner(isYou(v) ? 'You\'re out!' : `${v.name} is out!`,
-        own ? `${isYou(v) ? 'Your' : 'Its'} own number finished ${isYou(v) ? 'you' : 'it'} off` : `${isYou(by) ? 'You' : by.name} knocked ${isYou(v) ? 'you' : v.name} out with ${hit.label}`,
+        own ? `${isYou(v) ? 'Your' : v.kind === 'robot' ? 'Its' : 'Their'} own number finished ${isYou(v) ? 'you' : v.kind === 'robot' ? 'it' : 'them'} off` : `${isYou(by) ? 'You' : by.name} knocked ${isYou(v) ? 'you' : v.name} out with ${hit.label}`,
         isYou(v) ? C.bad : hexStr(by.flight), 2.4);
       sfx.play(isYou(v) ? 'groan' : 'cheer', null, 0.8); ctx.cheer(1);
       if (v.kind === 'robot') { v.model.celebrate('slump'); talk('kOut', true, v); }
       else if (isYou(v)) {
         talk('kYouOut', true, by.kind === 'robot' && by !== v ? by : someRobot());
-        if (!g.over) later(2.6, () => showBanner('Who\'ll win?', 'The robots play it out (quicker now) · or open the menu to play again', C.accent2, 3));
+        // (With a friend still in, it plays on at the usual pace.)
+        const friendIn = S.players.some((q, i) => q.kind === 'remote' && g.alive(i));
+        if (!g.over && !friendIn) later(2.6, () => showBanner('Who\'ll win?', S.opts.remote ? 'The robots play it out' : 'The robots play it out (quicker now) · or open the menu to play again', C.accent2, 3));
       }
       if (by.kind === 'robot' && by !== v) by.model.celebrate('dance');
     }
@@ -663,22 +682,23 @@ export function createDarts(ctx) {
     const g = S.game, win = S.players[g.winner], bots = robots();
     S.phase = 'done';
     if (bots.length) {
-      const you = isYou(win), D = stats.darts;
+      // (You're not always player 1: on a friend's screen you're player 2.)
+      const me = S.players.findIndex(isYou), you = isYou(win), D = stats.darts;
       D.kGames = (D.kGames ?? 0) + 1;
       if (you) D.kWins = (D.kWins ?? 0) + 1;
       save('sh_stats', stats);
-      const place = you ? 1 : g.n - g.outOrder.indexOf(0);
-      const names = bots.map(b => b.name), list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+      const place = you ? 1 : g.n - g.outOrder.indexOf(me);
+      const names = S.players.filter(p => !isYou(p)).map(p => p.name), list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
       if (you) {
-        showBanner('You win!', `Last one standing, with ${g.lives[0]} ${g.lives[0] === 1 ? 'life' : 'lives'} left`, C.good, 5);
+        showBanner('You win!', `Last one standing, with ${g.lives[me]} ${g.lives[me] === 1 ? 'life' : 'lives'} left`, C.good, 5);
         sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer(2); ctx.confetti({ x: 0, y: 1.9, z: BOARD.z + 0.6 });
         bots.forEach(b => b.model.celebrate('slump'));
         later(1.0, () => talk('pWin', true, someRobot(true)));
       } else {
         showBanner(`${win.name} wins`, `Last one standing · you came ${ordinal(place)} of ${g.n}`, hexStr(win.flight), 5);
-        sfx.play('groan');
-        win.model.celebrate('dance');
-        later(1.0, () => talk('win', true, win));
+        sfx.play(win.kind === 'remote' ? 'cheer' : 'groan');
+        if (win.kind === 'robot') { win.model.celebrate('dance'); later(1.0, () => talk('win', true, win)); }
+        else { bots.forEach(b => b.model.celebrate('slump')); later(1.0, () => talk('pWin', true, someRobot(true))); }
       }
       ctx.lastResult?.(you ? `You beat ${list} at Killer` : `${win.name} won Killer: you came ${ordinal(place)} of ${g.n}`, you);
     } else {
@@ -766,6 +786,7 @@ export function createDarts(ctx) {
         want = { y: cock.y + (rel.y - cock.y) * f, z: cock.z + (rel.z - cock.z) * f }; snap = true;
         if (f >= 1) robotRelease(R);
       } else if (R.step === 'follow') { want = follow; if (S.t >= R.next) robotAim(R); }
+      else if (R.step === 'held') want = cock;      // waiting for the host's dart (see robotRelease)
       if (R.label) { const a = aimPoint(R.label); target = _t.set(BOARD.x + a.x, BOARD.y + a.y, FACE_Z); }
     }
     const hx = bx + 0.2;
@@ -781,7 +802,7 @@ export function createDarts(ctx) {
     const look = flying ? flying.mesh.position : target ?? _t.set(BOARD.x, BOARD.y, FACE_Z);
     rp.model.update(b, look, dt);
     // The dart in its hand, pointing at the board.
-    const holding = !!R && ['aim', 'cock', 'throw'].includes(R.step);
+    const holding = !!R && ['aim', 'cock', 'throw', 'held'].includes(R.step);
     if (holding) {
       rp.model.handPos(_h);
       _h.z -= 0.06; _h.y += 0.02;
@@ -790,6 +811,8 @@ export function createDarts(ctx) {
     return holding;
   }
   function robotRelease(R) {
+    // A friend's screen: hold the dart up until the host's arrives (remoteDart throws it).
+    if (hostThrows()) { R.step = 'held'; R.t = 0; return; }
     const p0 = robotHandDart.position.clone();
     const hitAt = robotDart(player().rival.id, R.label, Math.random, R.finishing);
     const tgt = { x: BOARD.x + hitAt.x, y: BOARD.y + hitAt.y, z: FACE_Z };
@@ -1150,7 +1173,8 @@ export function createDarts(ctx) {
     // (Paused in VR, the dart stays in your hand: it can't be thrown from the menu.)
     if (paused) { handRig.visible = !!xr; screenDart.visible = false; crosshair.visible = false; aimDot.visible = false; S.hold = null; S.press = null; return; }
     // Out of a Killer game against robots: they play it out a bit quicker.
-    if (S.mode === 'killer' && S.phase !== 'done' && !S.players.some((p, i) => p.kind === 'you' && S.game.alive(i))) dt *= 1.7;
+    // (Not on a friend's game: both screens keep to the same pace.)
+    if (S.mode === 'killer' && S.phase !== 'done' && !S.opts.remote && !S.players.some((p, i) => p.kind === 'you' && S.game.alive(i))) dt *= 1.7;
     S.t += dt;
     const due = S.timers.filter(t => t.t <= S.t);
     if (due.length) { S.timers = S.timers.filter(t => t.t > S.t); due.forEach(t => t.fn()); }

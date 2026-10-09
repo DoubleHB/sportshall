@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HOLES, TRICK, COURSES, wallsOf, pointInPoly, coursePar, CUP_R } from '../src/golf/course.js';
 import { makeGolfBall, prepareHole, putt, rollOut, golfStep, windmillBlocked, putterContact, slopeAccel, ROLL_DECEL, speedOf, loopSpeed, sliderAt } from '../src/golf/physics.js';
+import { planPutt, playHole, golfSkill, wobble } from '../src/golf/ai.js';
 import { rng32 } from './sim.mjs';
 
 test('every hole: tee and cup inside the walls, par 2-3', () => {
@@ -150,4 +151,31 @@ test('a putter swung through a still ball sends it the way the face points', () 
   // A head well above the ball misses.
   const c = makeGolfBall(0, 1.0);
   assert.equal(putterContact(c, { ...pad, prevC: { x: 0, y: 0.3, z: 1.03 }, c: { x: 0, y: 0.3, z: 1.0 } }), 0);
+});
+
+test('the robot golfer finds a putt that drops, and its wobble stays near it', () => {
+  // A metre short of the cup on Warm Up, struck exactly as planned: in.
+  const h = HOLES[0], ph = prepareHole(h);
+  const ball = makeGolfBall(h.cup[0] + 0.1, h.cup[1] + 1.0);
+  const plan = planPutt(ph, ball, 0, golfSkill('omega'), rng32(3));
+  const b = { ...ball }; putt(b, plan.dx, plan.dz, plan.speed);
+  assert.ok(rollOut(ph, b).sunk, `plan ${JSON.stringify(plan)}`);
+  // Omega's wobble is a few degrees, not a different putt.
+  const rng = rng32(5);
+  for (let i = 0; i < 20; i++) {
+    const w = wobble(plan, golfSkill('omega'), rng);
+    const da = Math.abs(Math.atan2(w.dz, w.dx) - Math.atan2(plan.dz, plan.dx));
+    assert.ok(da < 0.25 && Math.abs(w.speed / plan.speed - 1) < 0.45);
+  }
+});
+
+// (The full balance, six robots over both courses, is a slower script: Rookie
+// about 7 over par, Chopper about 2 over, Omega about 3 under.)
+test('robot golfers: Omega plays the first three holes in fewer than Rookie', () => {
+  const holes = HOLES.slice(0, 3), par = coursePar(holes);
+  const round = (id, seed) => { const rng = rng32(seed); return holes.reduce((s, h) => s + playHole(h, id, rng), 0); };
+  const omega = round('omega', 11), rookie = round('rookie', 11);
+  assert.ok(omega < rookie, `omega ${omega}, rookie ${rookie}`);
+  assert.ok(omega <= par + 1, `omega ${omega}`);
+  assert.ok(rookie >= par, `rookie ${rookie}`);
 });

@@ -24,17 +24,18 @@ import { decodeFeel, feelLink } from './share.js';
 import { LESSONS, LESSON_BALLS, lessonById, judgeHit, judgeShot, judgeServe, starsFor } from './lessons.js';
 import { createGolf } from './golf/game.js';
 import { COURSES as GOLF_COURSES, coursePar } from './golf/course.js';
+import { GOLF_FORM } from './golf/ai.js';
 import { createDarts, DARTS_VIEW } from './darts/game.js';
 import { DART_AVG } from './darts/robots.js';
 import { simulateMatch, ROUND_LEGS, CUP_START } from './darts/cup.js';
 
-export const VERSION = '0.12.1';
+export const VERSION = '0.13.0';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
 // ------------------------------------------------------------- settings --
 const FEEL = { size: PH.PADDLE.radius, bounce: PH.PADDLE.e, grip: PH.PADDLE.mu, power: 1, smooth: 0 };
-const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1, golfCourse: 'classic',
+const DEFAULTS = { hand: 'right', assist: 'light', serve: 'casual', angle: 0, sound: true, level: 'medium', games: 1, pace: 'medium', spin: 'none', place: 'mix', talk: 'beeps', feel: { ...FEEL }, exNear: 'chopper', exFar: 'vortex', sport: 'tt', golfPlayers: 1, golfCourse: 'classic', golfRobot: 'none',
   dartsOpp: 'rookie', dartsGame: 'x01', dartsStart: 301, dartsFinish: 'any', dartsLegs: 3, dartsKPlayers: 4, dartsLives: 3, dartsAssist: 'light', dartsPower: 1, dartsCaller: true };
 const settings = load('sh_settings', DEFAULTS);
 settings.feel = { ...FEEL, ...(settings.feel || {}) };
@@ -261,6 +262,9 @@ golf = createGolf({
   haptic: (i, ms) => haptic(paddleCtrl(), i, ms),
   cheer: a => W.crowd.cheer(a),
   confetti: p => confetti.burst(p, 220, 0.9),
+  // A robot golfer: the table tennis robot, with a putter.
+  get robot() { return W.robot; },
+  say: (rival, line, model) => { G.speaker = model; robotSpeak(rival, line, O); },
   // Playing with a friend: tell them what happened (they word it for themselves),
   // and send their putts to the host.
   onAnnounce: ev => { if (G.role === 'host' && G.golfFriend) send({ t: 'gev', ev }); },
@@ -561,14 +565,21 @@ function renderMenu(ui) {
     dim(G.inXR ? 'Point your paddle hand at the floor: that\'s your putter. Free hand trigger: go to your ball.'
       : isTouch() ? 'Drag back from the ball and let go to putt: the further you drag, the harder it goes.'
         : 'Drag back from the ball with the mouse and let go to putt: further = harder.', 492);
-    label('Players (take turns)', 552);
-    ui.options('golfPlayers', L, 568, width, 84, [[1, '1 player'], [2, '2 players'], [3, '3 players'], [4, '4 players']], settings.golfPlayers);
+    label('Players (take turns)', 540);
+    ui.options('golfPlayers', L, 556, width, 76, [[1, '1 player'], [2, '2 players'], [3, '3 players'], [4, '4 players']], settings.golfPlayers);
+    // A robot to play against (it putts after you on each hole).
+    const GR = stats.golfRobots ?? { wins: 0, losses: 0, beaten: [] };
+    label('Play against a robot', 668);
+    ui.options('golfRobot', L, 684, width, 92, [['none', 'No robot', 'just you'], ...RIVALS.map(r => [r.id, r.name, GR.beaten.includes(r.id) ? '✓ beaten' : GOLF_FORM[r.id]])], settings.golfRobot, 10);
     const best = stats.golfBests[gc.id], par = coursePar(gc.holes);
-    ui.text(best ? `Your best on ${gc.name}: ${best} (${best === par ? 'level par' : best < par ? `${par - best} under` : `${best - par} over`})` : `No rounds on ${gc.name} yet. Par is ${par}.`, L, 712, { size: 34, weight: 800, color: best ? '#d4af37' : C.text });
+    const vs = RIVALS.find(r => r.id === settings.golfRobot);
+    ui.text(best ? `Your best on ${gc.name}: ${best} (${best === par ? 'level par' : best < par ? `${par - best} under` : `${best - par} over`})` : `No rounds on ${gc.name} yet. Par is ${par}.`, L, 818, { size: 30, weight: 800, color: best ? '#d4af37' : C.text });
+    if (GR.wins + GR.losses) ui.text(`v robots: won ${GR.wins}, lost ${GR.losses}`, R, 818, { size: 28, weight: 600, color: C.dim, align: 'right' });
+    const play = vs ? `Play ${gc.name} v ${vs.name}` : `Play ${gc.name}`;
     if (G.mode === 'golf' && golf.inProgress()) {
-      ui.button('resume', L, 770, width / 2 - 10, 120, 'Resume', { primary: true, size: 48 });
-      ui.button('golf:start', L + width / 2 + 10, 770, width / 2 - 10, 120, 'New round', { size: 42 });
-    } else ui.button('golf:start', L, 770, width, 120, `Play ${gc.name}`, { primary: true, size: 50 });
+      ui.button('resume', L, 852, width / 2 - 10, 112, 'Resume', { primary: true, size: 46 });
+      ui.button('golf:start', L + width / 2 + 10, 852, width / 2 - 10, 112, 'New round', { size: 40 });
+    } else ui.button('golf:start', L, 852, width, 112, play, { primary: true, size: 46 });
   } else if (G.tab === 'darts') {
     label('Opponent', 298);
     ui.options('dartsOpp', L, 316, width, 112, [...RIVALS.map(r => [r.id, r.name, D.beaten.includes(r.id) ? '✓ beaten' : `averages ${DART_AVG[r.id]}`]), ['local', '2 players', 'take turns']], settings.dartsOpp, 10);
@@ -696,7 +707,7 @@ function renderMenu(ui) {
       const golfing = G.sport === 'golf';
       const gcName = (GOLF_COURSES[settings.golfCourse] ?? GOLF_COURSES.classic).name;
       const what = golfing ? `Mini golf: the ${gcName} course, taking turns (set on the Play tab)`
-        : darting ? `Darts: ${dartsGameName()} (set on the Match tab)`
+        : darting ? `Darts: ${dartsGameName()}${friendRobotsText()} (set on the Match tab)`
           : `Match length: ${settings.games === 1 ? '1 game' : `best of ${settings.games}`} (set on the Match tab)`;
       ui.text(what, w / 2, 715, { size: 28, weight: 500, color: C.dim, align: 'center' });
       const inVersus = (G.mode === 'versus' && G.match && !G.match.over) || (G.mode === 'golf' && G.golfFriend && golf.inProgress()) || (G.mode === 'darts' && G.dartsFriend && darts.inProgress());
@@ -985,6 +996,7 @@ function onMenuClick(id) {
   else if (id === 'golf:start') startGolf();
   else if (id === 'golfversus') startGolfVersus();
   else if (k === 'golfPlayers') settings.golfPlayers = +v;
+  else if (k === 'golfRobot') settings.golfRobot = v;
   else if (k === 'golfCourse') settings.golfCourse = v;
   else if (k === 'cup') {
     if (v === 'new') { G.cup = newCup(); saveCup(); }
@@ -1028,6 +1040,7 @@ function onMenuClick(id) {
   drawScoreboard();
 }
 
+const _mf = new V3();
 function openMenu(tab) {
   if (tab) G.tab = tab;
   else if (G.sport === 'golf' && !['golf', 'friend', 'settings', 'feel', 'share'].includes(G.tab)) G.tab = 'golf';
@@ -1036,6 +1049,13 @@ function openMenu(tab) {
   G.paused = true;
   menu.mesh.visible = true;
   menuScene();
+  // Mini golf on a screen has its own camera (behind the ball), and your
+  // standing spot is beside the ball, so put the menu right in front of the camera.
+  if (!G.inXR && golf.active) {
+    camera.getWorldDirection(_mf);
+    menu.mesh.position.copy(camera.position).addScaledVector(_mf, 1.5);
+    menu.mesh.quaternion.copy(camera.quaternion);
+  }
   menu.redraw();
 }
 function closeMenu() {
@@ -1053,7 +1073,7 @@ function menuScene() {
   if (G.mode !== 'menu' || G.role === 'guest') return;
   const s = G.sport;
   // After a round, picking the other course shows that one.
-  if (golf.active && !golf.inProgress() && golf.courseId !== settings.golfCourse) { golf.stop(); attachHands(); }
+  if (golf.active && !golf.inProgress() && golf.courseId !== settings.golfCourse) { clearPlay(); G.mode = 'menu'; }
   if ((s === 'golf' && golf.active) || (s === 'darts' && darts.active)) return;   // a finished game is still on show
   darts.preview(s === 'darts', G.mr);
   golf.preview(s === 'golf' ? settings.golfCourse : null);
@@ -1076,7 +1096,12 @@ function clearPlay() {
   friendAvatar.root.visible = false; friendDesk.outer.visible = false;
   // Back from mini golf: the table and its scoreboard return.
   if (G.golfFriend) { send({ t: 'gend' }); G.golfFriend = false; }
-  if (golf?.active) { golf.stop(); attachHands(); }
+  if (golf?.active) {
+    golf.stop(); attachHands();
+    // A robot golfer goes back to being a table tennis robot.
+    W.robot.showPaddle(true); W.robot.root.position.set(0, 0, 0); W.robot.root.rotation.set(0, 0, 0);
+    G.speaker = null; setRival(G.rival);
+  }
   // Back from darts: the robot picks its paddle up again.
   if (G.dartsFriend) { send({ t: 'dend' }); G.dartsFriend = false; }
   G.dcupRef = null;
@@ -1115,7 +1140,7 @@ function startDarts(mode, cup = null, remote = null) {
   setView(DARTS_VIEW);
   closeMenu();
   const rival = ['x01', 'cricket'].includes(mode) && !local ? rivalById(settings.dartsOpp) : null;
-  const rivals = mode === 'killer' && !local ? killerField(settings.dartsOpp, settings.dartsKPlayers - 1) : null;
+  const rivals = mode !== 'killer' ? null : remote ? remote.robots ?? null : !local ? killerField(settings.dartsOpp, settings.dartsKPlayers - 1) : null;
   let opts = { mode, start: settings.dartsStart, doubleOut: settings.dartsFinish === 'double', legs: settings.dartsLegs, rival, rivals, players: remote ? 2 : settings.dartsKPlayers, lives: settings.dartsLives, remote };
   if (cup) {
     // A cup match: 301 over the round's legs, with your finish setting.
@@ -1135,12 +1160,20 @@ function startDarts(mode, cup = null, remote = null) {
 function startDartsVersus() {
   if (!G.net?.friend) return;
   const names = [HOST_NAME, G.net.friend.name];
-  startDarts('play', null, { names, me: 0, host: true });
+  const robots = friendKillerRobots();
+  startDarts('play', null, { names, me: 0, host: true, robots });
   G.dartsFriend = true;
   friendAvatar.root.visible = true;
   const o = darts.state.opts;
-  send({ t: 'dstart', opts: { mode: o.mode, start: o.start, doubleOut: o.doubleOut, legs: o.legs, lives: o.lives }, names, ...darts.setup });
+  send({ t: 'dstart', opts: { mode: o.mode, start: o.start, doubleOut: o.doubleOut, legs: o.legs, lives: o.lives }, names, robots: robots.map(r => r.id), ...darts.setup });
 }
+// Killer with a friend: robots make up the players picked on the Match tab
+// (3 or 4 players: one or two robots, round the robot picked there).
+function friendKillerRobots() {
+  if (settings.dartsGame !== 'killer' || settings.dartsKPlayers <= 2) return [];
+  return killerField(settings.dartsOpp, settings.dartsKPlayers - 2);
+}
+const friendRobotsText = () => { const r = friendKillerRobots().map(b => b.name); return r.length ? `, with ${r.join(' and ')}` : ''; };
 
 // players: a number (sharing this screen) or a list of names; me: our index.
 function startGolf(players = settings.golfPlayers, me = null) {
@@ -1149,7 +1182,9 @@ function startGolf(players = settings.golfPlayers, me = null) {
   W.table.visible = false; W.robot.root.visible = false; scoreboard.mesh.visible = false;
   desk.outer.visible = false;
   closeMenu();
-  golf.start(players, settings.golfCourse, me);
+  // A robot plays the round too, unless it's a round with a friend.
+  const rival = Array.isArray(players) ? null : RIVALS.find(r => r.id === settings.golfRobot) ?? null;
+  golf.start(players, settings.golfCourse, me, rival);
   attachHands();
   serveButton(false);
   if (!G.inXR) golf.snapCamera();
@@ -1873,7 +1908,9 @@ function streamState() {
   if (!G.net?.link?.connected || ++sendTick % 2) return;
   if (G.golfFriend) return streamGolf();
   // Darts go one by one as they're thrown; between them, whether we've paused.
-  if (G.dartsFriend) { if (sendTick % 30 === 0) send({ t: 'dhb', paused: G.paused || G.mode !== 'darts' }); return; }
+  // (Only while a game's going: once it's over the friend's screen plays out its last
+  // darts and the result even if our menu is open. Leaving darts sends dend.)
+  if (G.dartsFriend) { if (sendTick % 30 === 0) send({ t: 'dhb', paused: G.paused && darts.inProgress() }); return; }
   const b = G.ball;
   const cam = G.inXR ? renderer.xr.getCamera() : null;
   let head;
@@ -1981,6 +2018,8 @@ function guestDarts(on, m = {}) {
   if (on) {
     const o = m.opts ?? {};
     if (!['x01', 'cricket', 'killer'].includes(o.mode) || !Array.isArray(m.names) || m.names.length !== 2) return;
+    // Killer can have up to two robots in it too (their darts come from the host).
+    const robots = o.mode === 'killer' && Array.isArray(m.robots) ? m.robots.slice(0, 2).map(id => RIVALS.find(r => r.id === id)).filter(Boolean) : [];
     if (G.mode === 'golf') guestGolf(false);
     G.mode = 'darts';
     gs.dartsPaused = false;
@@ -1988,7 +2027,7 @@ function guestDarts(on, m = {}) {
     friendDesk.outer.visible = false; hostPaddle.group.visible = false; hostAvatar.root.visible = false; W.setBall(null);
     darts.start({
       mode: o.mode, start: [301, 501].includes(o.start) ? o.start : 501, doubleOut: !!o.doubleOut,
-      legs: [1, 3, 5].includes(o.legs) ? o.legs : 1, lives: [3, 5].includes(o.lives) ? o.lives : 3,
+      legs: [1, 3, 5].includes(o.legs) ? o.legs : 1, lives: [3, 5].includes(o.lives) ? o.lives : 3, rivals: robots,
       remote: { names: m.names.map(n => String(n).slice(0, 16)), me: 1, host: false, first: m.first === 1 ? 1 : 0, numbers: Array.isArray(m.numbers) ? m.numbers : null },
     });
     darts.snapCamera();
@@ -1998,6 +2037,9 @@ function guestDarts(on, m = {}) {
     G.mode = 'menu';
     W.table.visible = true; scoreboard.mesh.visible = true;
     friendDesk.outer.visible = true; hostPaddle.group.visible = true; hostAvatar.root.visible = true;
+    // Killer's robots go (the friend's screen shows the host, not a robot, at the table).
+    for (const r of [W.robot, robot2, robot3]) { r.root.visible = false; r.showPaddle(true); r.root.position.set(0, 0, 0); }
+    G.speaker = null; bubble.hide();
     banner.mesh.scale.setScalar(1);
     document.querySelector('#guest-hud .keys').textContent = isTouch() ? 'Drag to move your paddle · tap Serve when it\'s your serve' : 'Mouse = paddle · Space = toss when serving';
     fitCamera(); placeBoards(); resetDeskCamera();
@@ -2028,11 +2070,14 @@ function guestFrame(dt) {
   if (G.mode === 'darts') {
     const now = performance.now();
     if (!gs.ended && now - (gs.heard ?? now) > NET_TIMEOUT) { gs.ended = true; showBanner('Lost the host', 'Reload the page to join again', C.bad, 30); }
+    // Long spells of watching (Killer's robots) send nothing, so keep the host sure we're here.
+    if (now - (gs.lastSend ?? 0) > 1000) { gs.lastSend = now; G.net.link.send({ t: 'hb' }); }
     darts.update(dt, { xr: false, paused: !!gs.dartsPaused || !!gs.ended, holding: false });
     const ph = darts.phase, host = gs.hostName;
     document.getElementById('guest-status').textContent = gs.ended ? 'Disconnected' : ph === 'done' ? 'Match over: waiting for the host'
       : gs.dartsPaused ? `${host} paused the game` : ph === 'aim' ? 'Your turn: point at the board, press, let go when it\'s steady'
-        : ph === 'waiting' ? 'Throwing…' : ph === 'remote' ? `${host} is throwing` : `Playing ${host}`;
+        : ph === 'waiting' ? 'Throwing…' : ph === 'remote' ? `${host} is throwing`
+          : ph === 'robot' ? `${darts.state.players[darts.state.game?.turn ?? 0]?.name ?? 'A robot'} is throwing` : `Playing ${host}`;
     return;
   }
   if (G.mode === 'golf') {
@@ -2314,7 +2359,7 @@ function onFrame(t, frame, render = true) {
 
     W.setBall(G.ball ? G.ball.p : null, G.ball ? PH.len(G.ball.v) : 0);
     if (!G.paused) { G.bot.update(dt, G.now); G.botP.update(dt, G.now); }
-    if (W.robot.root.visible && !darts.active) W.robot.update(G.bot, G.ball?.p ?? null, dt);
+    if (W.robot.root.visible && !darts.active && !golf.active) W.robot.update(G.bot, G.ball?.p ?? null, dt);
     if (robot2.root.visible && !darts.active) robot2.update(G.botP, G.ball?.p ?? null, dt);
     if (friendAvatar.root.visible && G.dartsFriend) {
       // Darts: your friend stands beside you and steps up to throw (arm up, then a flick).

@@ -24,7 +24,14 @@ ball, and water (a penalty stroke and replay from where you hit it). For
 1-4 players taking turns, with a scorecard, a 6-stroke limit and best rounds. In
 VR a putter hangs from your paddle hand's pointer and you swing it; the free
 hand's trigger takes you to your ball, side-on. On a screen, drag back from the
-ball and let go. `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
+ball and let go. **Play against a robot** (Play tab): any of the six robots joins
+the round and putts after you on each hole. It waits beside the tee, walks to its
+ball, reads the putt (it tries a few hundred putts on a copy of the ball, a few
+milliseconds a frame, and keeps the one that still works when it wobbles), stands
+side-on and swings a putter. Its wobble sets how good it is: Rookie about 7 over
+par, Chopper about 2 over, Omega about 3 under (`src/golf/ai.js`; the full
+balance run is `node dev/golf-balance.mjs`). In VR you step back behind the tee
+to watch its putts. Wins and losses against robots are kept. `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
 walls, bumpers, slopes, windmill gate, cup, putter contact; tested in
 `tests/golf.test.mjs`) and `src/golf/game.js` (visuals, turns, scorecard).
 
@@ -50,7 +57,10 @@ quarter-finals and semi-finals are one leg of 301, the final best of three, with
 your finish setting. Watch the robot matches (two robots at the oche) or skip them
 (`src/darts/cup.js` plays a skipped match out dart by dart with the robots' real
 throwing). **Darts with a friend** (Darts > Friend): host as below, then "Start
-darts together" plays the game picked on the Match tab. Both screens run the same
+darts together" plays the game picked on the Match tab (Killer with 3 or 4
+players adds one or two robots: their darts are thrown on the host's game and
+sent like everyone else's; on the friend's screen a robot holds its dart up until
+the host's arrives). Both screens run the same
 game from the same start (`darts.setup`: who throws first, Killer numbers); the
 friend sends where they let go (`dthrow`), the host throws it for them from beside
 you and sends every dart's flight and outcome (`dart`) so both boards match. Each
