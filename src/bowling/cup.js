@@ -21,6 +21,8 @@ export const BOWL_FORM = {
   omega: { first: [0, 0, 0, 0, 0, 0, 0.011, 0.025, 0.112, 0.266, 0.586], spare: 0.66 },
 };
 const form = id => BOWL_FORM[id] ?? BOWL_FORM.rookie;
+// Their averages over a 10-frame game (the same runs), for the menu.
+export const BOWL_AVG = { rookie: 100, bolt: 145, spinny: 145, chopper: 175, zippy: 180, vortex: 195, omega: 215 };
 
 // One ball at a full rack: how many go down.
 export function quickFirst(id, rng = Math.random) {

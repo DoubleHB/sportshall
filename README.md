@@ -35,9 +35,10 @@ to watch its putts. Wins and losses against robots are kept. **Mini golf cup**
 (Mini Golf > Cup): the same eight-player draw as the other cups; quarter-finals
 and semi-finals are a round of Classic against a robot, the final a round of
 Trickshot; fewest strokes goes through, and a tie goes to sudden death on the
-course's last hole. Robot-v-robot rounds are played out from each robot's
-usual scores (`simulateRound` in `src/golf/ai.js`: putting them all out would
-take half a minute on a headset). `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
+course's last hole. Robot-v-robot rounds can be watched (both robots putt it
+out: the golf game takes up to two robots, `S.bots`, the second being the
+exhibition robot) or played out from each robot's usual scores
+(`simulateRound` in `src/golf/ai.js`). `src/golf/course.js` (holes), `src/golf/physics.js` (rolling,
 walls, bumpers, slopes, windmill gate, cup, putter contact; tested in
 `tests/golf.test.mjs`) and `src/golf/game.js` (visuals, turns, scorecard).
 
@@ -105,10 +106,17 @@ while the robot bowls. Tested in `tests/bowling.test.mjs`.
 **Bowling cup** (Bowling > Cup): the same eight-player draw; quarter-finals and
 semi-finals are a 5-frame game, the final a full 10 frames, no bumpers. Most pins
 goes through; a tie goes to a roll-off (one ball each at a full rack, again if
-it's level). Robot-v-robot games are played out from each robot's usual bowling
-(`src/bowling/cup.js`: `BOWL_FORM` is each robot's first-ball pins and spare
-rate, measured from the real thing; bowling every ball with the physics and the
-robots' line search would take several seconds on a headset).
+it's level). Robot-v-robot games can be watched (two robots bowl it out: the
+bowling game takes up to two robots) or played out from each robot's usual
+bowling (`src/bowling/cup.js`: `BOWL_FORM` is each robot's first-ball pins and
+spare rate, measured from the real thing). **With a friend** (hosting, Cup tab:
+"Start a cup with ..."): you and your friend go in opposite halves with six
+robots (`newCup(rng, friendName)`, entrant `FRIEND`); your friend bowls their
+games from their screen while you watch, and every cup game shows on their
+screen too, with the result worded for each of you (`cupNote`).
+**Bowling ladder** (Bowling > Ladder): like table tennis's, the six robots in
+turn; the first three are 5-frame games, the last three 10; a tie goes to a
+roll-off; beat Omega to be bowling champion (the trophy).
 **Spare practice** (Bowling > Practice): eight common leaves (the 10 pin, the 7,
 6-10, 3-6-10, the bucket, the 5, the 3-10 baby split and the 7-10) set up on
 their own (`src/bowling/practice.js`). A spare round is ten of them, one ball

@@ -130,3 +130,19 @@ test('spare practice: a round has ten spares, no 7-10 twice, and Omega can pick 
     assert.deepEqual([...down].sort(), [...s.pins].sort(), `${s.name}: ${down}`);
   }
 });
+
+test('bowling cup with a friend: you and they go in opposite halves with six robots', async () => {
+  const { newCup, FRIEND, YOU, involvesPerson } = await import('../src/cup.js');
+  const rng = rng32(21);
+  for (let k = 0; k < 30; k++) {
+    const c = newCup(rng, 'Sam'), slots = c.rounds[0].flatMap(m => [m.a, m.b]);
+    assert.equal(c.friend, 'Sam');
+    assert.equal(new Set(slots).size, 8);
+    const half = id => (slots.indexOf(id) < 4 ? 0 : 1);
+    assert.notEqual(half(YOU), half(FRIEND));
+    assert.equal(c.rounds[0].filter(involvesPerson).length, 2);
+  }
+  // Without a friend, the old draw: you and Omega in opposite halves.
+  const c = newCup(rng), slots = c.rounds[0].flatMap(m => [m.a, m.b]);
+  assert.ok(!slots.includes(FRIEND) && slots.includes('omega'));
+});

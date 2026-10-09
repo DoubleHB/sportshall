@@ -19,7 +19,8 @@ import { CanvasBoard, roundRect, FONT, C } from '../panel.js';
 
 // Where you stand: on the approach, a step behind the foul line.
 export const BOWL_VIEW = { x: LANE.x, z: LANE.foulZ + 1.0, th: 0, lift: 0 };
-const WAIT = { x: LANE.x - 1.35, z: LANE.foulZ + 1.1 };     // where a robot waits its turn
+// Where a robot waits its turn (a second one, when you watch two, a step behind).
+const WAITS = [{ x: LANE.x - 1.35, z: LANE.foulZ + 1.1 }, { x: LANE.x - 1.5, z: LANE.foulZ + 2.1 }];
 const FRIEND_WAIT = { x: LANE.x + 1.0, z: LANE.foulZ + 0.5 };   // and a friend (in front of the ball return)
 const BALL_STATES = ['lane', 'gutter', 'pit', 'gone'];
 // In VR, where you watch the robot's ball from (it bowls from where you stand).
@@ -152,10 +153,9 @@ export function createBowling(ctx) {
   const handRig = makeBall(BALL_COLOURS[0]);
   handRig.position.set(0, -0.085, 0.02);
   handRig.visible = false;
-  // A robot's ball, in its hand.
-  const robotBall = makeBall(BALL_COLOURS[1]);
-  robotBall.visible = false;
-  root.add(robotBall);
+  // The robots' balls, in their hands (two robots when you watch a cup game).
+  const robotBalls = [makeBall(BALL_COLOURS[1]), makeBall(BALL_COLOURS[2])];
+  robotBalls.forEach(b => { b.visible = false; root.add(b); });
   // On a friend's screen: the ball in the host's hand (when the host's in VR).
   const otherBall = makeBall(BALL_COLOURS[0]);
   otherBall.visible = false;
@@ -201,7 +201,8 @@ export function createBowling(ctx) {
   const turnIdx = () => (S.rolloff ? S.rolloff.turn : S.practice ? 0 : S.game?.turn ?? 0);
   const player = () => S.players[turnIdx()];
   const isYou = p => p?.kind === 'you';
-  const robotP = () => S.players.find(p => p.kind === 'robot') ?? null;
+  const robots = () => S.players.filter(p => p.kind === 'robot');
+  const robotP = () => robots()[0] ?? null;
   // (On a friend's screen, not again while the ball we've sent is on its way to the host.)
   const yourGo = () => S.phase === 'aim' && isYou(player()) && !(S.remote && S.sentAt && S.t - S.sentAt < 3);
   const mine = () => S.players.filter(isYou).length === 1;
@@ -209,10 +210,12 @@ export function createBowling(ctx) {
   // Sounds (heard on a friend's screen too: ctx.sfx sends them).
   const sound = (k, p = null, v) => sfx.play(k, p, v);
 
-  // opts: { players (people sharing this screen), rival (a robot or null), frames, bumpers,
-  //   cup: { label } (a cup game: a tie goes to a roll-off),
-  //   remote: { names, me, host } (a game with a friend on another screen: names in
-  //   turn order, which of them is us, and whether we're the host) }
+  // opts: { players (people sharing this screen: 0 to watch robots), rivals (robots, or
+  //   rival for one), frames, bumpers,
+  //   cup: { label } or ladder: { label } (a tie goes to a roll-off),
+  //   remote: { names, me, host } (a game with a friend on another screen: the
+  //   people's names in turn order, which of them is us (-1: neither, we're
+  //   watching), and whether we're the host) }
   function start(opts) {
     stopAll();
     S.preview = false; S.practice = null; S.rolloff = null;
@@ -221,18 +224,20 @@ export function createBowling(ctx) {
     S.remote = !!R && !R.host;
     if (R) S.players = R.names.map((n, i) => ({ name: i === R.me ? 'You' : String(n), kind: i === R.me ? 'you' : 'remote', colour: BALL_COLOURS[i] }));
     else {
-      const people = Math.max(1, opts.players ?? 1);
+      const rivalsIn = (opts.rivals ?? (opts.rival ? [opts.rival] : [])).length;
+      const people = Math.max(rivalsIn ? 0 : 1, opts.players ?? 1);
       S.players = Array.from({ length: people }, (_, i) => ({ name: people === 1 ? 'You' : `Player ${i + 1}`, kind: 'you', colour: BALL_COLOURS[i] }));
     }
-    if (opts.rival) S.players.push({ name: opts.rival.name, kind: 'robot', rival: opts.rival, colour: opts.rival.look.accent, model: ctx.robot, pos: { ...WAIT }, hand: new THREE.Vector3(), bot: { side: 1, pad: { x: 0.8, y: 1.0, z: 0 }, swing: 0, mood: 0 } });
+    const rivals = (opts.rivals ?? (opts.rival ? [opts.rival] : [])).slice(0, 2);
+    rivals.forEach((rival, k) => S.players.push({ name: rival.name, kind: 'robot', rival, colour: rival.look.accent, model: ctx.robots[k], ball: robotBalls[k], k,
+      pos: { ...WAITS[k] }, hand: new THREE.Vector3(), holding: false, bot: { side: 1, pad: { x: 0.8, y: 1.0, z: 0 }, swing: 0, mood: 0 } }));
     S.game = new Bowling({ players: S.players.length, frames: opts.frames ?? 10 });
     makeCard(S.players.length);
     S.t = 0; S.timers = []; S.streak = S.players.map(() => 0); S.cardKey = null; S.sentAt = 0;
     S.friendPos = { ...FRIEND_WAIT };
-    const rp = robotP();
-    if (rp) {
+    for (const rp of robots()) {
       rp.model.root.visible = true; rp.model.root.rotation.set(0, 0, 0); rp.model.showPaddle(false); rp.model.setLook(rp.rival.look);
-      recolour(robotBall, rp.colour);
+      recolour(rp.ball, rp.colour);
     }
     root.visible = true;
     newRack();
@@ -240,7 +245,7 @@ export function createBowling(ctx) {
     drawCard();
     if (S.remote) return;          // the host runs it: we're sent what happens
     announce({ k: 'start' });
-    if (rp) later(1.0, () => talk('start', true));
+    robots().forEach((rp, k) => later(1.0 + k * 2.4, () => talk(rp, 'start', true)));
     later(2.8, beginBall);
   }
 
@@ -383,26 +388,24 @@ export function createBowling(ctx) {
     later(6, () => ctx.onOver?.('practice'));
   }
 
-  // A cup game's tie: one ball each at a full rack, most pins wins (again if it's level).
+  // A cup or ladder game's tie: one ball each at a full rack, most pins wins
+  // (again if it's level).
   function startRolloff() {
     S.rolloff = { balls: S.players.map(() => []), turn: 0 };
-    showBanner('A tie! Roll-off', 'One ball each: most pins wins', C.accent2, 3);
-    sound('cheer', null, 0.6); ctx.cheer?.(1);
+    announce({ k: 'rolloff' });
     drawCard();
     nextBall(null, 3);
   }
   function scoreRolloff(down) {
-    const R = S.rolloff, who = R.turn, p = S.players[who];
-    R.balls[who].push(down.length);
-    const name = nameOf(p), n = down.length;
-    showBanner(n === 10 ? 'STRIKE!' : `${name === 'You' ? 'You' : name}: ${n}`, 'Roll-off', n === 10 ? '#d4af37' : hexStr(p.colour), 1.8);
-    if (n === 10) { sound('cheer', null, 0.8); ctx.cheer?.(1.2); }
+    const R = S.rolloff, who = R.turn, n = down.length;
+    R.balls[who].push(n);
+    announce({ k: 'ro', who, n });
     drawCard();
     if (R.turn + 1 < S.players.length) { R.turn++; nextBall(null, 1.8); return; }
     const last = R.balls.map(b => b[b.length - 1]);
     if (last[0] === last[1]) {
       R.turn = 0;
-      later(1.8, () => showBanner('Level again', 'Another ball each', C.accent2, 2));
+      later(1.8, () => announce({ k: 'level' }));
       nextBall(null, 3.6);
       return;
     }
@@ -414,13 +417,35 @@ export function createBowling(ctx) {
   function announce(ev) { show(ev); ctx.onAnnounce?.(ev); }
   const P_MOOD = { strike: 'pStrike', double: 'pStrike', turkey: 'pStrike', spare: 'pSpare', gutter: 'pGutter' };
   function show(ev) {
-    const rp = robotP();
+    const rs = robots();
     if (ev.k === 'start') {
       const people = S.players.filter(p => p.kind !== 'robot'), o = S.opts, F = o.frames ?? 10;
-      const others = S.players.filter(p => !isYou(p)).map(p => p.name);
-      const who = S.players.some(p => p.kind === 'remote') ? `You v ${others.join(' and ')}`
-        : people.length > 1 ? `${people.length} players, taking turns${rp ? ` and ${rp.name}` : ''}` : rp ? `You v ${rp.name}` : 'Just you';
-      showBanner(o.cup ? o.cup.label : F === 5 ? 'Bowling: a quick game' : 'Bowling', `${who} · ${F} frames${o.bumpers ? ' · bumpers up' : ''}`, C.accent, 3);
+      const others = S.players.filter(p => !isYou(p)).map(p => p.name), robotNames = rs.map(r => r.name).join(' and ');
+      const who = !people.length ? rs.map(r => r.name).join(' v ')
+        : S.players.some(p => p.kind === 'remote') ? (mine() ? `You v ${others.join(' and ')}` : others.join(' v '))
+          : people.length > 1 ? `${people.length} players, taking turns${rs.length ? ` and ${robotNames}` : ''}` : rs.length ? `You v ${robotNames}` : 'Just you';
+      showBanner(o.cup?.label ?? o.ladder?.label ?? (F === 5 ? 'Bowling: a quick game' : 'Bowling'), `${who} · ${F} frames${o.bumpers ? ' · bumpers up' : ''}`, C.accent, 3);
+    } else if (ev.k === 'rolloff') {
+      showBanner('A tie! Roll-off', 'One ball each: most pins wins', C.accent2, 3);
+      sfx.play('cheer', null, 0.6); ctx.cheer?.(1);
+    } else if (ev.k === 'ro') {
+      const p = S.players[ev.who];
+      if (!p) return;
+      showBanner(ev.n === 10 ? 'STRIKE!' : `${nameOf(p)}: ${ev.n}`, 'Roll-off', ev.n === 10 ? '#d4af37' : hexStr(p.colour), 1.8);
+      if (ev.n === 10) { sfx.play('cheer', null, 0.8); ctx.cheer?.(1.2); }
+    } else if (ev.k === 'level') {
+      showBanner('Level again', 'Another ball each', C.accent2, 2);
+    } else if (ev.k === 'note') {
+      // A cup or ladder result, worded for each screen (good: a win for the person
+      // here, false: a loss, null: we're watching).
+      const n = S.remote ? ev.friend : ev.host;
+      if (!n || !Array.isArray(ev.scores)) return;
+      const sub = S.players.map((p, i) => `${nameOf(p)} ${ev.scores[i]}`).join(' · ') + (ev.ro ? ` · roll-off ${ev.ro[0]}–${ev.ro[1]}` : '');
+      showBanner(n.title, `${n.sub} · ${sub}`, n.colour, 6);
+      if (n.good === true) { sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2); ctx.confetti?.({ x: LANE.x, y: 1.2, z: LANE.foulZ - 1 }); }
+      else if (n.good === false) sfx.play('groan');
+      else { sfx.play('cheer', null, 0.8); ctx.cheer?.(1.5); }
+      rs.forEach(r => r.model.celebrate(S.players[ev.winner] === r ? 'dance' : 'slump'));
     } else if (ev.k === 'turn') {
       const p = S.players[ev.who];
       if (!p) return;
@@ -428,7 +453,7 @@ export function createBowling(ctx) {
     } else if (ev.k === 'ball') {
       const p = S.players[ev.who];
       if (!p) return;
-      const name = nameOf(p), you = name === 'You', robot = p === rp;
+      const name = nameOf(p), you = name === 'You', robot = p.kind === 'robot';
       let mood = null, cele = null;
       if (ev.strike) {
         const n = ev.streak;
@@ -452,24 +477,27 @@ export function createBowling(ctx) {
         showBanner(you ? what : `${name}: ${what}`, ev.frameDone ? 'Open frame' : `${ev.left.length} left for a spare`, hexStr(p.colour), 1.8);
         if (ev.frameDone) mood = 'open';
       }
-      // The robot: celebrates or sulks (on both screens); talks (the host's
-      // game decides what it says and sends it).
-      if (!rp || !mood) return;
-      if (robot) { if (cele) rp.model.celebrate(cele); if (!S.remote) later(1.2, () => talk(mood, mood === 'turkey')); }
-      else if (P_MOOD[mood]) { if (mood === 'strike' || mood === 'turkey') rp.model.celebrate('droop'); if (!S.remote) later(1.2, () => talk(P_MOOD[mood])); }
+      // The robots: celebrate or sulk (on both screens); talk (the host's game
+      // decides what they say and sends it).
+      if (!mood) return;
+      for (const r of rs) {
+        if (r === p) { if (cele) r.model.celebrate(cele); if (!S.remote) later(1.2, () => talk(r, mood, mood === 'turkey')); }
+        else if (P_MOOD[mood]) { if (mood === 'strike' || mood === 'turkey') r.model.celebrate('droop'); if (!S.remote) later(1.6, () => talk(r, P_MOOD[mood])); }
+      }
     } else if (ev.k === 'say') {
-      if (rp) ctx.say?.(rp.rival, ev.line, rp.model);
+      const r = S.players[ev.who];
+      if (r?.kind === 'robot') ctx.say?.(r.rival, ev.line, r.model);
     } else if (ev.k === 'over') {
       const sc = ev.scores, top = Math.max(...sc), winners = S.players.filter((_, i) => sc[i] === top);
       const sub = S.players.map((p, i) => `${nameOf(p)} ${sc[i]}`).join(' · ') + (ev.best ? ' · your high game!' : '');
+      const w = winners[0];
       if (winners.length > 1) showBanner('A tie!', sub, C.accent2, 5);
-      else if (winners[0].kind === 'robot') { showBanner(`${winners[0].name} wins`, sub, C.bad, 5); sfx.play('groan'); rp.model.celebrate('dance'); }
-      else if (!isYou(winners[0])) { showBanner(`${winners[0].name} wins`, sub, C.bad, 5); sfx.play('groan'); rp?.model.celebrate('slump'); }
-      else {
-        showBanner(S.players.length === 1 ? `Game over: ${sc[0]}` : `${nameOf(winners[0])} win${nameOf(winners[0]) === 'You' ? '' : 's'}!`, sub, '#d4af37', 5);
+      else if (isYou(w)) {
+        showBanner(S.players.length === 1 ? `Game over: ${sc[0]}` : `${nameOf(w)} win${nameOf(w) === 'You' ? '' : 's'}!`, sub, '#d4af37', 5);
         sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2); ctx.confetti?.({ x: LANE.x, y: 1.2, z: LANE.foulZ - 1 });
-        rp?.model.celebrate('slump');
-      }
+      } else if (!S.players.some(isYou)) { showBanner(`${w.name} wins!`, sub, hexStr(w.colour), 5); sfx.play('cheer', null, 0.8); ctx.cheer?.(1.5); }   // (watching)
+      else { showBanner(`${w.name} wins`, sub, C.bad, 5); sfx.play('groan'); }
+      if (winners.length === 1) rs.forEach(r => r.model.celebrate(r === w ? 'dance' : 'slump'));
     }
   }
   // A split: the head pin's down and what's left is in two or more groups.
@@ -484,68 +512,66 @@ export function createBowling(ctx) {
   }
 
   function finishGame() {
-    const g = S.game, rp = robotP();
+    const g = S.game, rs = robots();
     const scores = S.players.map((_, i) => g.score(i));
-    // A cup game that's level: a roll-off first.
-    if (S.opts.cup && !S.rolloff && scores[0] === scores[1]) return startRolloff();
+    // A cup or ladder game that's level: a roll-off first.
+    const decided = S.opts.cup || S.opts.ladder;
+    if (decided && !S.rolloff && S.players.length === 2 && scores[0] === scores[1]) return startRolloff();
     S.phase = 'done';
     const B = stats.bowling;
     // Your high game (when you're the only person bowling here).
-    const people = S.players.filter(isYou), youI = S.players.indexOf(people[0]);
+    const people = S.players.filter(isYou), youI = people.length === 1 ? S.players.indexOf(people[0]) : -1;
     let best = false;
-    if (people.length === 1 && (S.opts.frames ?? 10) === 10) {
+    if (youI >= 0 && (S.opts.frames ?? 10) === 10) {
       B.games++; best = scores[youI] > B.high; B.high = Math.max(B.high, scores[youI]);
     }
     // Who won: the most pins (or the last roll-off ball).
     const ro = S.rolloff?.balls.map(b => b[b.length - 1]);
     const winner = ro ? (ro[0] > ro[1] ? 0 : 1) : scores.indexOf(Math.max(...scores));
-    if (rp && people.length === 1) {
+    // You v a robot: your record against it.
+    const rp = rs[0];
+    if (youI >= 0 && rs.length === 1 && S.players.length === 2) {
       const you = scores[youI], it = scores[S.players.indexOf(rp)];
       const won = ro ? winner === youI : you >= it;
       if (won) { B.wins++; if (!B.beaten.includes(rp.rival.id)) B.beaten.push(rp.rival.id); } else B.losses++;
       ctx.lastResult?.(`${won ? 'You beat' : 'You lost to'} ${rp.name} at bowling: ${you} to ${it}${ro ? ' (after a roll-off)' : ''}`);
     }
     save('sh_stats', stats);
-    // A cup game: what it means for the cup, as the result's banner.
-    const note = S.opts.cup ? ctx.onCupResult?.({ scores, winner, rolloff: S.rolloff ? S.rolloff.balls.map(b => b.reduce((a, c) => a + c, 0)) : null }) : null;
-    if (note) {
-      const sub = S.players.map((p, i) => `${nameOf(p)} ${scores[i]}`).join(' · ') + (ro ? ` · roll-off ${ro[0]}–${ro[1]}` : '');
-      showBanner(note.title, `${note.sub} · ${sub}`, note.colour, 6);
-      if (winner === youI) { sfx.play('fanfare'); sfx.play('cheer', null, 1); ctx.cheer?.(2); ctx.confetti?.({ x: LANE.x, y: 1.2, z: LANE.foulZ - 1 }); rp?.model.celebrate('slump'); }
-      else { sfx.play('groan'); rp?.model.celebrate('dance'); }
-    } else announce({ k: 'over', scores, best });
+    // A cup or ladder game: what it means, as the result's banner (worded for
+    // each screen: the host's note and, playing a friend, theirs).
+    const note = decided ? ctx.onResult?.({ scores, winner, rolloff: S.rolloff ? S.rolloff.balls.map(b => b.reduce((a, c) => a + c, 0)) : null }) : null;
+    if (note) announce({ k: 'note', scores, ro, winner, host: note.host, friend: note.friend ?? null });
+    else announce({ k: 'over', scores, best });
     const tie = !ro && scores.filter(s => s === scores[winner]).length > 1;
-    if (rp && !tie) later(1.0, () => talk(winner === S.players.indexOf(rp) ? 'win' : 'pWin', true));
+    if (!tie) rs.forEach((r, k) => later(1.0 + k * 2.2, () => talk(r, winner === S.players.indexOf(r) ? 'win' : 'pWin', true)));
     drawCard();
-    later(6, () => ctx.onOver?.(S.opts.cup ? 'cup' : 'play'));
+    later(6, () => ctx.onOver?.(S.opts.cup ? 'cup' : S.opts.ladder ? 'ladder' : 'play'));
   }
 
-  // ------------------------------------------------------------ the robot --
+  // ----------------------------------------------------------- the robots --
   let lastTalk = -9;
-  function talk(moment, force = false) {
-    const rp = robotP();
+  function talk(rp, moment, force = false) {
     if (!rp) return;
     if (!force && (Math.random() > (BOWL_TALK_CHANCE[moment] ?? 0.5) || S.t - lastTalk < 3)) return;
     const line = bowlLine(rp.rival, moment);
     if (!line) return;
     lastTalk = S.t;
-    announce({ k: 'say', line });
+    announce({ k: 'say', line, who: S.players.indexOf(rp) });
   }
 
   const _v = new THREE.Vector3();
-  function robotUpdate(dt) {
-    const rp = robotP();
-    if (!rp) return;
+  function robotUpdate(dt) { for (const rp of robots()) robotStep(rp, dt); }
+  function robotStep(rp, dt) {
     // A friend's screen: where the host's game has the robot.
     if (S.remote) {
-      const r = S.rPose;
-      if (r) { rp.pos.x = r[0]; rp.pos.z = r[1]; rp.hand.set(r[2], r[3], r[4]); }
+      const r = S.rPose?.[rp.k];
+      if (Array.isArray(r)) { rp.pos.x = r[0]; rp.pos.z = r[1]; rp.hand.set(r[2], r[3], r[4]); }
       return poseRobot(rp, !!r?.[5], dt);
     }
     const up = player() === rp && S.phase === 'robot';
     const R = up ? S.rob : null;
     // Where it stands: waiting to one side, or on the approach for its ball.
-    let spot = WAIT, hand = { y: 1.02, z: -0.14 }, holding = false;
+    let spot = WAITS[rp.k], hand = { y: 1.02, z: -0.14 }, holding = false;
     if (R) {
       R.t += dt;
       if (!R.shot) R.shot = robotShot(rp.rival.id, S.stand.length === 10 ? null : S.stand);
@@ -571,7 +597,7 @@ export function createBowling(ctx) {
       rp.pos.x += (spot.x - rp.pos.x) * k; rp.pos.z += (spot.z - rp.pos.z) * k;
     }
     rp.hand.lerp(_v.set(rp.pos.x + 0.2, hand.y, rp.pos.z + hand.z), Math.min(1, dt * (R?.step === 'go' ? 30 : 10)));
-    S.robotHolding = holding;
+    rp.holding = holding;
     poseRobot(rp, holding, dt);
   }
   // The robot's model where it stands, its arm out to its hand (and the ball in it).
@@ -582,8 +608,8 @@ export function createBowling(ctx) {
     rp.bot.mood *= Math.pow(0.5, dt);
     const look = S.ball && ballMesh.visible ? ballMesh.position : _v.set(LANE.x, 0.3, LANE.headZ);
     rp.model.update(rp.bot, look, dt);
-    robotBall.visible = holding;
-    if (holding) { rp.model.handPos(robotBall.position); robotBall.position.y -= 0.06; }
+    rp.ball.visible = holding;
+    if (holding) { rp.model.handPos(rp.ball.position); rp.ball.position.y -= 0.06; }
   }
 
   // ------------------------------------------------------------- your ball --
@@ -790,7 +816,7 @@ export function createBowling(ctx) {
     g.fillText('Total', w - 90, 38);
     S.players.forEach((p, k) => {
       const y = 62 + k * rowH, frames = G.frames[k], totals = G.totals(k);
-      const now = k === G.turn && S.phase !== 'done';
+      const now = k === turnIdx() && S.phase !== 'done';
       roundRect(g, 18, y, w - 36, rowH - 10, 14);
       g.fillStyle = now ? '#17284a' : '#121a2c'; g.fill();
       g.fillStyle = hexStr(p.colour); g.beginPath(); g.arc(44, y + rowH / 2 - 5, 11, 0, Math.PI * 2); g.fill();
@@ -901,21 +927,24 @@ export function createBowling(ctx) {
 
   function stopAll() {
     S.timers = []; S.ball = null; S.hold = null; S.press = null; S.rob = null; S.rPose = null; S.sentAt = 0;
-    ballMesh.visible = robotBall.visible = screenBall.visible = aimDots.visible = handRig.visible = otherBall.visible = false;
+    ballMesh.visible = screenBall.visible = aimDots.visible = handRig.visible = otherBall.visible = false;
+    robotBalls.forEach(b => { b.visible = false; });
   }
 
   // ------------------------------------------------- playing a friend --
   const rnd = v => Math.round(v * 1000) / 1000;
   // The host's game as it is now, for the friend's screen.
   function snapshot() {
-    const b = S.ball, g = S.game, rp = robotP();
+    const b = S.ball, g = S.game;
     return {
       ph: S.phase, t: g?.turn ?? 0, fr: g?.frames ?? [], f: g?.frame ?? 0, ov: !!g?.over,
       b: b && ballMesh.visible ? [rnd(b.x), rnd(b.y ?? BALL_R), rnd(b.z), rnd(b.vx), rnd(b.vz), BALL_STATES.indexOf(b.state), b.who] : null,
       rn: S.rackN, st: S.stand,
       // (Standing pins don't move: only the fallen ones.)
       p: S.pins.filter(p => p.down).map(p => [p.i, rnd(p.x), rnd(p.z), rnd(p.fall), rnd(p.fx), rnd(p.fz), p.gone ? 1 : 0]),
-      r: rp ? [rnd(rp.pos.x), rnd(rp.pos.z), rnd(rp.hand.x), rnd(rp.hand.y), rnd(rp.hand.z), S.robotHolding ? 1 : 0] : null,
+      r: robots().map(rp => [rnd(rp.pos.x), rnd(rp.pos.z), rnd(rp.hand.x), rnd(rp.hand.y), rnd(rp.hand.z), rp.holding ? 1 : 0]),
+      // (Whose ball it is, and a roll-off's balls.)
+      ti: turnIdx(), ro: S.rolloff?.balls ?? null,
     };
   }
   // The friend's screen: draw what the host sent.
@@ -926,7 +955,9 @@ export function createBowling(ctx) {
     const g = S.game;
     if (g && Array.isArray(s.fr) && s.fr.length === S.players.length && s.fr.every(Array.isArray)) {
       g.frames = s.fr; g.turn = s.t | 0; g.frame = s.f | 0; g.over = !!s.ov;
-      const key = JSON.stringify([s.fr, s.t, S.phase === 'done']);
+      // (A roll-off: whose ball comes from it, not the game.)
+      S.rolloff = Array.isArray(s.ro) && s.ro.length === S.players.length ? { balls: s.ro, turn: s.ti | 0 } : null;
+      const key = JSON.stringify([s.fr, s.t, S.phase === 'done', s.ro]);
       if (key !== S.cardKey) { S.cardKey = key; drawCard(); }
     }
     if (Array.isArray(s.st) && s.rn !== S.hostRack) { S.hostRack = s.rn; newRack(s.st.filter(i => i >= 0 && i < 10)); }
@@ -980,7 +1011,7 @@ export function createBowling(ctx) {
     remoteAnnounce(ev) {
       if (!S.remote || !ev || typeof ev.k !== 'string') return;
       if (ev.k === 'ball' && !Array.isArray(ev.left)) return;
-      if (ev.k === 'over' && !Array.isArray(ev.scores)) return;
+      if ((ev.k === 'over' || ev.k === 'note') && !Array.isArray(ev.scores)) return;
       show(ev);
     },
     // The ball in the host's hand, when the host is in VR and it's their go (or null).
