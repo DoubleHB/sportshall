@@ -862,24 +862,25 @@ export function createDarts(ctx) {
   function throwVR(p0, v, sight) {
     const power = settings.dartsPower ?? 1;
     let v0 = { x: v.x * power, y: v.y * power, z: v.z * power };
-    let moved = 0;
+    let moved = 0, off = null;
     const A = ASSIST[settings.dartsAssist] ?? ASSIST.light;
-    if (A.k && sight && v0.z < 0 && p0.z > FACE_Z) {
+    if (sight && v0.z < 0 && p0.z > FACE_Z) {
       const T = (FACE_Z - p0.z) / v0.z;
       const raw = posAt(p0, v0, T);
+      off = { x: raw.x - sight.x, y: raw.y - sight.y };   // where it was going v where you aimed, for tuning
       const d = Math.hypot(sight.x - raw.x, sight.y - raw.y);
-      if (d < A.reach) {
+      if (A.k && d < A.reach) {
         v0 = solveLaunch(p0, { x: raw.x + (sight.x - raw.x) * A.k, y: raw.y + (sight.y - raw.y) * A.k, z: FACE_Z }, T);
         moved = d * A.k;
       }
     }
-    logThrow(Math.hypot(v.x, v.y, v.z) * power, moved);
+    logThrow(Math.hypot(v.x, v.y, v.z) * power, moved, off);
     ctx.haptic?.(0.25, 18);
     handRig.visible = false;
     launch(p0, v0);
   }
-  function logThrow(speed, moved) {
-    S.log.push({ speed, moved, result: null });
+  function logThrow(speed, moved, off = null) {
+    S.log.push({ speed, moved, off, result: null });
     if (S.log.length > 8) S.log.shift();
   }
 

@@ -33,7 +33,7 @@ import { SPARES, ROUND_SPARES } from './bowling/practice.js';
 import { DART_AVG } from './darts/robots.js';
 import { simulateMatch, ROUND_LEGS, CUP_START, DARTS_LADDER } from './darts/cup.js';
 
-export const VERSION = '0.18.1';
+export const VERSION = '0.18.2';
 const TB = PH.TABLE;
 const V3 = THREE.Vector3;
 
@@ -696,11 +696,11 @@ function renderMenu(ui) {
   } else if (G.tab === 'gsettings') {
     // Mini golf's own settings: the putter hand, and putt power for tuning on a headset.
     handAndSound(ui, L, width, 'Putter hand');
-    powerAndTalk(ui, L, width, 'gpower', settings.golfPower ?? 1, 'Putts coming up short? Turn it up.', 446);
+    powerAndTalk(ui, L, width, 'gpower', settings.golfPower ?? 1, 'Putts short? Turn it up. Running past? Down.', 446);
     const log = golf.log.slice(-4).reverse();
     label('Your last putts (for tuning)', 640);
     if (!log.length) dim(G.inXR ? 'Putt a few and they show here: how hard you swung and how fast the ball went.' : 'In VR, your putts show here (for tuning the power).', 686, 28);
-    log.forEach((l, i) => dim(`Putter ${l.swing.toFixed(2)} m/s → ball ${l.speed.toFixed(2)} m/s${l.result ? ` · ${l.result}` : ''}`, 686 + i * 40, 27));
+    log.forEach((l, i) => dim(`${l.from != null ? `${l.from.toFixed(1)} m putt: s` : 'S'}wing ${l.swing.toFixed(2)} → ball ${l.speed.toFixed(2)} m/s${l.result ? ` · ${l.result}` : ''}`, 686 + i * 40, 27));
     vrButtons(ui, L, width);
   } else if (G.tab === 'bladder') {
     // The bowling ladder: like table tennis's, a game against each robot in turn.
@@ -816,14 +816,17 @@ function renderMenu(ui) {
     ui.button('dpower:-', L, 616, 110, 84, '–', { size: 52 });
     ui.text(`${Math.round(settings.dartsPower * 100)}%`, L + 205, 660, { size: 44, weight: 800, align: 'center', base: 'middle', color: settings.dartsPower !== 1 ? '#ffd23f' : '#fff' });
     ui.button('dpower:+', L + 300, 616, 110, 84, '+', { size: 52 });
-    ui.text('Darts landing low? Turn it up.', L, 736, { size: 25, weight: 500, color: C.dim });
+    ui.text('Darts landing low? Turn it up. High? Down.', L, 736, { size: 25, weight: 500, color: C.dim });
     ui.text('Caller', L + width / 2 + 20, 600, { size: 32, weight: 650, color: C.dim });
     ui.options('dartsCaller', L + width / 2 + 20, 616, width / 2 - 20, 84, [[true, 'On', '"One hundred and eighty!"'], [false, 'Off']], settings.dartsCaller);
     label('Robot talk', 790);
     ui.options('talk', L, 806, width, 76, [['off', 'Off'], ['bubbles', 'Bubbles'], ['beeps', 'Beeps'], ['voice', 'Voice']], settings.talk);
     // Your last throws in VR, for tuning the power on a real headset.
     const log = darts.log.slice(-2).reverse();
-    log.forEach((t, i) => ui.text(`Throw ${t.speed.toFixed(1)} m/s${t.moved > 0.005 ? ` · aim help moved it ${Math.round(t.moved * 100)} cm` : ''}${t.result ? ` · ${t.result}` : ''}`, L, 916 + i * 34, { size: 25, weight: 500, color: C.text }));
+    // (off: where it was heading compared with where the dart pointed while you aimed)
+    const offText = o => (o ? [o.y > 0.02 ? `${Math.round(o.y * 100)} cm high` : o.y < -0.02 ? `${Math.round(-o.y * 100)} cm low` : '',
+      o.x > 0.02 ? `${Math.round(o.x * 100)} cm right` : o.x < -0.02 ? `${Math.round(-o.x * 100)} cm left` : ''].filter(Boolean).join(', ') || 'on your aim' : '');
+    log.forEach((t, i) => ui.text(`Throw ${t.speed.toFixed(1)} m/s${t.off ? ` · ${offText(t.off)}` : ''}${t.moved > 0.005 ? ` · help ${Math.round(t.moved * 100)} cm` : ''}${t.result ? ` · ${t.result}` : ''}`, L, 916 + i * 34, { size: 25, weight: 500, color: C.text }));
     if (G.inXR) {
       ui.button('recentre', L + width - 640, 900, 300, 70, 'Recentre', { size: 32 });
       ui.button('exit', L + width - 320, 900, 320, 70, G.mr ? 'Exit mixed reality' : 'Exit VR', { size: 32 });

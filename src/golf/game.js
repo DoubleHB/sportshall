@@ -929,10 +929,14 @@ export function createGolf(ctx) {
         const pad = tracker.substep((i - 1) / n, i / n);
         const sp = GP.putterContact(S.ball, pad);
         if (sp > 0) {
-          // Settings > Putt power: if real swings come out short (or long).
-          const v = Math.min(GP.MAX_PUTT, sp * (settings.golfPower ?? 1)), b = S.ball, l = Math.hypot(b.vx, b.vz) || 1;
+          // A putter in VR weighs nothing, so real swings come out hard: on the
+          // Quest 3S (2026-10-10) tee putts of 3-4 m left at 5-6 m/s, when about
+          // 2.3 m/s reaches the cup. The curve tames big swings more than taps
+          // (0.8 → 0.6, 3 → 1.6, 5.5 → 2.5 m/s). Settings > Putt power goes on top.
+          const v = Math.min(GP.MAX_PUTT, 0.7 * sp ** 0.75 * (settings.golfPower ?? 1)), b = S.ball, l = Math.hypot(b.vx, b.vz) || 1;
           b.vx *= v / l; b.vz *= v / l;
-          S.log.push({ swing: Math.hypot(pad.vel.x, pad.vel.z), speed: v, result: null });
+          const cup = holeNow().cup;
+          S.log.push({ swing: Math.hypot(pad.vel.x, pad.vel.z), speed: v, from: Math.hypot(cup[0] - b.x, cup[1] - b.z), result: null });
           if (S.log.length > 8) S.log.shift();
           onPutt(v);
         }
@@ -958,7 +962,7 @@ export function createGolf(ctx) {
           else if (e.type === 'cup') { logResult('holed'); sfx.play('cup', { x: S.ball.x, y: 0, z: S.ball.z }); finishTurn(true); }
           else if (e.type === 'stop') {
             const h = holeNow();
-            logResult(`stopped ${Math.round(Math.hypot(h.cup[0] - S.ball.x, h.cup[1] - S.ball.z) * 100)} cm from the hole`);
+            logResult(`stopped ${Math.round(Math.hypot(h.cup[0] - S.ball.x, h.cup[1] - S.ball.z) * 100)} cm away`);
             if (S.strokes >= MAX_STROKES) finishTurn(false);
             else {
               S.phase = 'aim'; drawCard();
