@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sports Hall launcher: an app-library icon that opens the live game in the
+     Quest Browser (Android WebViews can't run WebXR, so the browser hosts it). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.kramn.sportshall"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
+
+    <queries>
+        <package android:name="com.oculus.browser" />
+    </queries>
+
+    <application
+        android:label="Sports Hall"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false">
+        <activity
+            android:name=".Launch"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
